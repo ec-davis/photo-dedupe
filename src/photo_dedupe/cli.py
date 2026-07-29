@@ -130,10 +130,10 @@ def report(
         help="Output format: md, json, or both",
     ),
     output_dir: Path = typer.Option(
-        Path("."),
+        Path("output"),
         "--output-dir",
         "-o",
-        help="Directory for report.md / duplicates.json",
+        help="Directory for report.md / duplicates.json (default: ./output)",
     ),
     under: Optional[list[Path]] = typer.Option(
         None,
@@ -360,14 +360,19 @@ def clean(
             if detailed:
                 typer.echo(f"keep: {group.keeper.path}")
             for f in group.delete_candidates:
+                path = Path(f.path)
                 try:
-                    Path(f.path).unlink()
+                    path.unlink(missing_ok=True)
                     deleted.append(f.path)
                     if detailed:
                         typer.echo(f"  deleted: {f.path}")
                 except OSError as exc:
                     errors.append(f"{f.path}: {exc}")
                     typer.echo(f"  error: {f.path} ({exc})", err=True)
+
+        if deleted:
+            with _open_db(db_path) as database:
+                database.remove_files_by_paths(deleted)
 
         log_path = log_file or (Path.cwd() / "logs" / "photo-dedupe-delete.log")
         log_path.parent.mkdir(parents=True, exist_ok=True)

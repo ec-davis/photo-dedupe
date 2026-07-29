@@ -15,6 +15,7 @@ venv/
 photo-dedupe.sqlite
 photo-dedupe-delete.log
 logs/
+output/
 report.md
 duplicates.json
 *.sqlite

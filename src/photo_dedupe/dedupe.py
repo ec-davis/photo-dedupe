@@ -145,6 +145,9 @@ def find_hash_duplicates(
     by_hash: dict[str, list[FileRecord]] = defaultdict(list)
     for record in db.present_files_with_hash():
         assert record.hash is not None
+        # Skip stale index rows whose files are already gone from disk.
+        if not Path(record.path).is_file():
+            continue
         by_hash[record.hash].append(record)
 
     groups: list[DuplicateGroup] = []
@@ -173,6 +176,8 @@ def find_name_size_mismatches(
     policy = policy or KeeperPolicy()
     by_key: dict[tuple[str, int], list[FileRecord]] = defaultdict(list)
     for record in db.present_files():
+        if not Path(record.path).is_file():
+            continue
         by_key[(record.name.lower(), record.size)].append(record)
 
     groups: list[DuplicateGroup] = []

@@ -231,6 +231,18 @@ class Database:
         self._conn.commit()
         return int(cur.rowcount)
 
+    def remove_files_by_paths(self, paths: Sequence[str]) -> int:
+        """Delete index rows for the given absolute paths. Returns rows removed."""
+        if not paths:
+            return 0
+        placeholders = ",".join("?" * len(paths))
+        cur = self._conn.execute(
+            f"DELETE FROM files WHERE path IN ({placeholders})",
+            tuple(paths),
+        )
+        self._conn.commit()
+        return int(cur.rowcount)
+
     def commit(self) -> None:
         self._conn.commit()
 
