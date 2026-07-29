@@ -277,7 +277,7 @@ def clean(
     log_file: Optional[Path] = typer.Option(
         None,
         "--log-file",
-        help="Path for the delete log when using --apply (default: ./photo-dedupe-delete.log)",
+        help="Path for the delete log when using --apply (default: ./logs/photo-dedupe-delete.log)",
     ),
 ) -> None:
     """Preview or delete exact duplicate files.
@@ -369,7 +369,8 @@ def clean(
                     errors.append(f"{f.path}: {exc}")
                     typer.echo(f"  error: {f.path} ({exc})", err=True)
 
-        log_path = log_file or (Path.cwd() / "photo-dedupe-delete.log")
+        log_path = log_file or (Path.cwd() / "logs" / "photo-dedupe-delete.log")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).isoformat()
         lines = [f"# photo-dedupe delete log {stamp}", ""]
         lines.extend(deleted)
