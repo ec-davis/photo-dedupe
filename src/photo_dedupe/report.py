@@ -9,6 +9,8 @@ from pathlib import Path
 from photo_dedupe.db import Database, FileRecord
 from photo_dedupe.dedupe import (
     DuplicateGroup,
+    KeeperPolicy,
+    filter_groups_involving_roots,
     find_hash_duplicates,
     find_name_size_mismatches,
 )
@@ -37,16 +39,30 @@ def _group_dict(group: DuplicateGroup) -> dict:
     }
 
 
-def build_report_payload(db: Database) -> dict:
-    hash_groups = find_hash_duplicates(db)
-    name_groups = find_name_size_mismatches(db)
+def build_report_payload(
+    db: Database,
+    *,
+    policy: KeeperPolicy | None = None,
+    under: list[Path] | None = None,
+) -> dict:
+    policy = policy or KeeperPolicy()
+    hash_groups = filter_groups_involving_roots(
+        find_hash_duplicates(db, policy), under
+    )
+    name_groups = filter_groups_involving_roots(
+        find_name_size_mismatches(db, policy), under
+    )
     stats = db.count_stats()
     reclaimable = sum(
         sum(f.size for f in g.delete_candidates) for g in hash_groups
     )
+    under_resolved = [str(Path(p).resolve()) for p in (under or [])]
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "hash_algorithm": HASH_ALGO,
+        "keep_policy": policy.keep,
+        "prefer_roots": [str(p.resolve()) for p in policy.prefer_roots],
+        "under": under_resolved,
         "stats": stats,
         "duplicate_groups": len(hash_groups),
         "duplicate_files_extra": sum(len(g.delete_candidates) for g in hash_groups),
@@ -56,9 +72,15 @@ def build_report_payload(db: Database) -> dict:
     }
 
 
-def write_json_report(db: Database, path: Path) -> Path:
+def write_json_report(
+    db: Database,
+    path: Path,
+    *,
+    policy: KeeperPolicy | None = None,
+    under: list[Path] | None = None,
+) -> Path:
     path = Path(path)
-    payload = build_report_payload(db)
+    payload = build_report_payload(db, policy=policy, under=under)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
 
@@ -73,28 +95,49 @@ def format_bytes(n: int) -> str:
     return f"{n} B"
 
 
-def write_markdown_report(db: Database, path: Path) -> Path:
+def write_markdown_report(
+    db: Database,
+    path: Path,
+    *,
+    policy: KeeperPolicy | None = None,
+    under: list[Path] | None = None,
+) -> Path:
     path = Path(path)
-    payload = build_report_payload(db)
+    payload = build_report_payload(db, policy=policy, under=under)
     lines: list[str] = [
         "# Photo Deduper Report",
         "",
         f"Generated: `{payload['generated_at']}`",
         f"Hash algorithm: `{payload['hash_algorithm']}`",
-        "",
-        "## Summary",
-        "",
-        f"- Sources: {payload['stats']['sources']}",
-        f"- Present files: {payload['stats']['present']}",
-        f"- Hashed files: {payload['stats']['hashed']}",
-        f"- Missing (from prior scans): {payload['stats']['missing']}",
-        f"- Exact duplicate groups: {payload['duplicate_groups']}",
-        f"- Extra duplicate files: {payload['duplicate_files_extra']}",
-        f"- Reclaimable: {format_bytes(payload['reclaimable_bytes'])}",
-        "",
-        "## Exact duplicates (same content hash)",
-        "",
+        f"Keep policy: `{payload['keep_policy']}`",
     ]
+    if payload["prefer_roots"]:
+        lines.append(
+            "Prefer roots: "
+            + ", ".join(f"`{p}`" for p in payload["prefer_roots"])
+        )
+    if payload["under"]:
+        lines.append(
+            "Limited to groups involving: "
+            + ", ".join(f"`{p}`" for p in payload["under"])
+        )
+    lines.extend(
+        [
+            "",
+            "## Summary",
+            "",
+            f"- Sources: {payload['stats']['sources']}",
+            f"- Present files: {payload['stats']['present']}",
+            f"- Hashed files: {payload['stats']['hashed']}",
+            f"- Missing (from prior scans): {payload['stats']['missing']}",
+            f"- Exact duplicate groups: {payload['duplicate_groups']}",
+            f"- Extra duplicate files: {payload['duplicate_files_extra']}",
+            f"- Reclaimable: {format_bytes(payload['reclaimable_bytes'])}",
+            "",
+            "## Exact duplicates (same content hash)",
+            "",
+        ]
+    )
 
     hash_dups = payload["hash_duplicates"]
     if not hash_dups:
@@ -141,12 +184,22 @@ def export_reports(
     output_dir: Path,
     *,
     fmt: str = "both",
+    policy: KeeperPolicy | None = None,
+    under: list[Path] | None = None,
 ) -> list[Path]:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     if fmt in ("md", "both"):
-        written.append(write_markdown_report(db, output_dir / "report.md"))
+        written.append(
+            write_markdown_report(
+                db, output_dir / "report.md", policy=policy, under=under
+            )
+        )
     if fmt in ("json", "both"):
-        written.append(write_json_report(db, output_dir / "duplicates.json"))
+        written.append(
+            write_json_report(
+                db, output_dir / "duplicates.json", policy=policy, under=under
+            )
+        )
     return written

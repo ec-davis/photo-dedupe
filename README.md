@@ -36,9 +36,12 @@ photo-dedupe --db ~/photo-index.sqlite scan ~/Pictures
 
 # Print duplicate groups
 photo-dedupe duplicates
+# Only groups that involve files under Downloads
+photo-dedupe duplicates --under ~/Downloads
 
 # Write report.md and duplicates.json
 photo-dedupe report --format both -o .
+photo-dedupe report --under ~/Downloads -o .
 
 # Dry-run summary (files to delete + total size)
 photo-dedupe clean

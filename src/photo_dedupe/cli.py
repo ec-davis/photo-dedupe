@@ -14,6 +14,7 @@ from photo_dedupe.db import Database
 from photo_dedupe.dedupe import (
     KeeperPolicy,
     filter_groups_by_roots,
+    filter_groups_involving_roots,
     find_hash_duplicates,
 )
 from photo_dedupe.hashing import HASH_ALGO
@@ -22,7 +23,14 @@ from photo_dedupe.scanner import DEFAULT_EXTENSIONS, scan_roots
 
 app = typer.Typer(
     name="photo-dedupe",
-    help="Organize and de-duplicate photos using a local SQLite index.",
+    help=(
+        "Find and remove exact duplicate photos using a local SQLite index. "
+        "Works on local folders and cloud sync paths (Google Drive / OneDrive)."
+    ),
+    epilog=(
+        "Typical flow: scan → duplicates|clean → purge-missing. "
+        "Destructive commands are dry-run unless you pass --apply."
+    ),
     add_completion=False,
     no_args_is_help=True,
 )
@@ -55,7 +63,7 @@ def main(
     db: Path = typer.Option(
         None,
         "--db",
-        help="Path to SQLite index (default: ./photo-dedupe.sqlite)",
+        help="SQLite index path (default: ./photo-dedupe.sqlite in the current directory)",
         show_default=False,
     ),
 ) -> None:
@@ -66,7 +74,7 @@ def main(
 
 @app.command()
 def version() -> None:
-    """Show version and hash algorithm."""
+    """Show package version and content-hash algorithm."""
     typer.echo(f"photo-dedupe {__version__} (hash={HASH_ALGO})")
 
 
@@ -75,15 +83,19 @@ def scan(
     ctx: typer.Context,
     paths: list[Path] = typer.Argument(
         ...,
-        help="One or more directories (or files) to scan",
+        help="Directories or files to index (repeatable)",
     ),
     follow_symlinks: bool = typer.Option(
         False,
         "--follow-symlinks",
-        help="Follow symlinks while walking directories",
+        help="Follow symlinks while walking directories (off by default)",
     ),
 ) -> None:
-    """Scan folders and update the SQLite index (size-gated hashing)."""
+    """Scan folders and update the SQLite index.
+
+    Records name/size/mtime, reuses hashes when unchanged, and hashes only
+    files that share a size with another present file.
+    """
     db_path: Path = ctx.obj["db_path"]
     with _open_db(db_path) as database:
         result = scan_roots(
@@ -115,27 +127,49 @@ def report(
     format: str = typer.Option(
         "both",
         "--format",
-        help="Report format: md, json, or both",
+        help="Output format: md, json, or both",
     ),
     output_dir: Path = typer.Option(
         Path("."),
         "--output-dir",
         "-o",
-        help="Directory for report files",
+        help="Directory for report.md / duplicates.json",
+    ),
+    under: Optional[list[Path]] = typer.Option(
+        None,
+        "--under",
+        help="Only report groups that involve this path; delete candidates listed are limited to it (repeatable)",
+    ),
+    keep: str = typer.Option(
+        "oldest",
+        "--keep",
+        help="Which copy to keep: oldest or newest (by mtime)",
+    ),
+    prefer_root: Optional[list[Path]] = typer.Option(
+        None,
+        "--prefer-root",
+        help="Prefer keeping files under this path when choosing the keeper (repeatable)",
     ),
 ) -> None:
-    """Write Markdown and/or JSON reports from the current index."""
+    """Write Markdown and/or JSON duplicate reports from the index."""
     fmt = format.lower().strip()
     if fmt not in {"md", "json", "both"}:
         raise typer.BadParameter("format must be md, json, or both")
 
+    policy = _keeper_policy(keep, prefer_root)
     db_path: Path = ctx.obj["db_path"]
     if not db_path.exists():
         typer.echo(f"Database not found: {db_path}", err=True)
         raise typer.Exit(code=1)
 
     with _open_db(db_path) as database:
-        written = export_reports(database, output_dir, fmt=fmt)
+        written = export_reports(
+            database,
+            output_dir,
+            fmt=fmt,
+            policy=policy,
+            under=list(under or []),
+        )
 
     for path in written:
         typer.echo(f"Wrote {path}")
@@ -147,20 +181,25 @@ def duplicates(
     json_out: bool = typer.Option(
         False,
         "--json",
-        help="Emit JSON instead of a text summary",
+        help="Print JSON instead of a text listing",
+    ),
+    under: Optional[list[Path]] = typer.Option(
+        None,
+        "--under",
+        help="Only list groups that involve this path; delete candidates shown are limited to it (repeatable)",
     ),
     keep: str = typer.Option(
         "oldest",
         "--keep",
-        help="Keeper policy: oldest or newest mtime",
+        help="Which copy to keep: oldest or newest (by mtime)",
     ),
     prefer_root: Optional[list[Path]] = typer.Option(
         None,
         "--prefer-root",
-        help="Prefer keeping files under this directory (repeatable)",
+        help="Prefer keeping files under this path when choosing the keeper (repeatable)",
     ),
 ) -> None:
-    """Print exact duplicate groups from the index."""
+    """List exact duplicate groups and the chosen keeper for each."""
     policy = _keeper_policy(keep, prefer_root)
     db_path: Path = ctx.obj["db_path"]
     if not db_path.exists():
@@ -168,7 +207,10 @@ def duplicates(
         raise typer.Exit(code=1)
 
     with _open_db(db_path) as database:
-        groups = find_hash_duplicates(database, policy)
+        groups = filter_groups_involving_roots(
+            find_hash_duplicates(database, policy),
+            list(under or []),
+        )
 
     if json_out:
         payload = [
@@ -195,42 +237,55 @@ def duplicates(
         typer.echo("")
 
 
-@app.command()
+@app.command(
+    epilog=(
+        "Examples:\n"
+        "  photo-dedupe clean\n"
+        "  photo-dedupe clean --detailed\n"
+        "  photo-dedupe clean --prefer-root ~/Pictures --delete-under ~/Downloads -d\n"
+        "  photo-dedupe clean --keep newest --apply\n"
+    ),
+)
 def clean(
     ctx: typer.Context,
     apply: bool = typer.Option(
         False,
         "--apply",
-        help="Actually delete duplicate files (without this flag, dry-run only)",
+        help="Delete files on disk (default is dry-run preview only)",
     ),
     detailed: bool = typer.Option(
         False,
         "--detailed",
         "-d",
-        help="Show per-file keep/delete preview (default dry-run is summary only)",
+        help="Show per-file keep/delete listing (default output is summary only)",
     ),
     delete_under: Optional[list[Path]] = typer.Option(
         None,
         "--delete-under",
-        help="Only delete duplicates under this directory (repeatable)",
+        help="Only allow deletes under this directory; other paths are left alone (repeatable)",
     ),
     keep: str = typer.Option(
         "oldest",
         "--keep",
-        help="Keeper policy: oldest or newest mtime",
+        help="Which copy to keep: oldest or newest (by mtime)",
     ),
     prefer_root: Optional[list[Path]] = typer.Option(
         None,
         "--prefer-root",
-        help="Prefer keeping files under this directory (repeatable)",
+        help="Prefer keeping files under this path when choosing the keeper (repeatable)",
     ),
     log_file: Optional[Path] = typer.Option(
         None,
         "--log-file",
-        help="Write delete log path (default: photo-dedupe-delete.log)",
+        help="Path for the delete log when using --apply (default: ./photo-dedupe-delete.log)",
     ),
 ) -> None:
-    """Remove exact duplicate files using the keeper policy (dry-run by default)."""
+    """Preview or delete exact duplicate files.
+
+    Default is a dry-run summary (counts and sizes). Use --detailed for paths.
+    --prefer-root affects which file is kept; --delete-under limits which
+    paths may be removed. Nothing is deleted unless you pass --apply.
+    """
     do_delete = apply
     delete_roots = list(delete_under or [])
     policy = _keeper_policy(keep, prefer_root)
@@ -262,13 +317,22 @@ def clean(
         typer.echo("  Delete under:")
         for r in delete_roots:
             typer.echo(f"    - {r.resolve()}")
-    typer.echo(f"  Total files found:      {present_count}")
-    typer.echo(f"  Duplicate groups found: {len(all_groups)}")
-    typer.echo(f"  Files to delete:        {len(candidates)}")
-    typer.echo(f"  Files after clean:      {present_count - len(candidates)}")
-    typer.echo(f"  Total size (before):    {format_bytes(size_before)}")
-    typer.echo(f"  Size to delete:         {format_bytes(size_to_delete)}")
-    typer.echo(f"  Total size (after):     {format_bytes(size_after)}")
+        typer.echo(f"  Index files:            {present_count}")
+        typer.echo(f"  Index duplicate groups: {len(all_groups)}")
+        typer.echo(f"  Index size:             {format_bytes(size_before)}")
+        typer.echo(f"  Groups in scope:        {len(groups)}")
+        typer.echo(f"  Files to delete:        {len(candidates)}")
+        typer.echo(f"  Size to delete:         {format_bytes(size_to_delete)}")
+        typer.echo(f"  Files after clean:      {present_count - len(candidates)}")
+        typer.echo(f"  Size after clean:       {format_bytes(size_after)}")
+    else:
+        typer.echo(f"  Total files found:      {present_count}")
+        typer.echo(f"  Duplicate groups found: {len(all_groups)}")
+        typer.echo(f"  Files to delete:        {len(candidates)}")
+        typer.echo(f"  Files after clean:      {present_count - len(candidates)}")
+        typer.echo(f"  Total size (before):    {format_bytes(size_before)}")
+        typer.echo(f"  Size to delete:         {format_bytes(size_to_delete)}")
+        typer.echo(f"  Total size (after):     {format_bytes(size_after)}")
 
     if not candidates:
         if delete_roots:
@@ -330,22 +394,34 @@ def clean(
             typer.echo("Use --detailed for a per-file preview.")
 
 
-@app.command("purge-missing")
+@app.command(
+    "purge-missing",
+    epilog=(
+        "Examples:\n"
+        "  photo-dedupe purge-missing\n"
+        "  photo-dedupe purge-missing --detailed\n"
+        "  photo-dedupe purge-missing --apply\n"
+    ),
+)
 def purge_missing(
     ctx: typer.Context,
     apply: bool = typer.Option(
         False,
         "--apply",
-        help="Actually remove missing rows from the index (default is dry-run)",
+        help="Remove missing rows from the SQLite index (default is dry-run)",
     ),
     detailed: bool = typer.Option(
         False,
         "--detailed",
         "-d",
-        help="List missing paths that would be purged",
+        help="List each missing path that would be purged",
     ),
 ) -> None:
-    """Remove index rows for files no longer found on disk (after a scan)."""
+    """Remove stale index rows for files no longer on disk.
+
+    Run scan first so missing status is up to date. This deletes database
+    rows only — not files on disk.
+    """
     db_path: Path = ctx.obj["db_path"]
     if not db_path.exists():
         typer.echo(f"Database not found: {db_path}", err=True)

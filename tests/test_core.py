@@ -8,6 +8,7 @@ from photo_dedupe.dedupe import (
     KeeperPolicy,
     choose_keeper,
     filter_groups_by_roots,
+    filter_groups_involving_roots,
     find_hash_duplicates,
 )
 from photo_dedupe.hashing import hash_file
@@ -135,6 +136,15 @@ def test_filter_groups_by_roots(tmp_path: Path) -> None:
 
     none = filter_groups_by_roots(groups, [tmp_path / "other"])
     assert none == []
+
+    involving = filter_groups_involving_roots(groups, [junk_dir])
+    assert len(involving) == 1
+    assert len(involving[0].files) == 2
+    assert len(involving[0].delete_candidates) == 1
+    assert involving[0].delete_candidates[0].path == str(copy.resolve())
+
+    empty = filter_groups_involving_roots(groups, [tmp_path / "other"])
+    assert empty == []
 
 
 def test_report_export(tmp_path: Path) -> None:

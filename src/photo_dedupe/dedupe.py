@@ -109,6 +109,34 @@ def filter_groups_by_roots(
     return filtered
 
 
+def filter_groups_involving_roots(
+    groups: list[DuplicateGroup],
+    roots: list[Path] | None,
+) -> list[DuplicateGroup]:
+    """Keep groups that include at least one file under the given roots.
+
+    When roots are set, delete_candidates are also limited to those paths so
+    reports/previews only treat in-scope files as removable. The keeper is
+    unchanged (may live outside the roots). Empty/None roots leaves groups
+    unchanged.
+    """
+    if not roots:
+        return groups
+
+    filtered: list[DuplicateGroup] = []
+    for group in groups:
+        if not any(path_is_under_roots(f.path, roots) for f in group.files):
+            continue
+        candidates = tuple(
+            f
+            for f in group.delete_candidates
+            if path_is_under_roots(f.path, roots)
+        )
+        # Group still involves the roots (e.g. only the keeper is under them).
+        filtered.append(replace(group, delete_candidates=candidates))
+    return filtered
+
+
 def find_hash_duplicates(
     db: Database,
     policy: KeeperPolicy | None = None,
