@@ -198,6 +198,13 @@ def scan(
     )
 
 
+def _sort_by(value: str) -> str:
+    norm = value.lower().strip()
+    if norm not in ("path", "hash"):
+        raise typer.BadParameter("sort must be 'path' or 'hash'")
+    return norm
+
+
 @app.command()
 def report(
     ctx: typer.Context,
@@ -227,11 +234,17 @@ def report(
         "--prefer-root",
         help="Prefer keeping files under this path when choosing the keeper (repeatable)",
     ),
+    sort: str = typer.Option(
+        "path",
+        "--sort",
+        help="Order groups by keeper path (default) or hash",
+    ),
 ) -> None:
     """Write Markdown and/or JSON duplicate reports from the index."""
     fmt = format.lower().strip()
     if fmt not in {"md", "json", "both"}:
         raise typer.BadParameter("format must be md, json, or both")
+    sort_by = _sort_by(sort)
 
     policy = _keeper_policy(keep, prefer_root)
     db_path: Path = ctx.obj["db_path"]
@@ -246,6 +259,7 @@ def report(
             fmt=fmt,
             policy=policy,
             under=list(under or []),
+            sort_by=sort_by,  # type: ignore[arg-type]
         )
 
     for path in written:
@@ -275,9 +289,20 @@ def duplicates(
         "--prefer-root",
         help="Prefer keeping files under this path when choosing the keeper (repeatable)",
     ),
+    sort: str = typer.Option(
+        "path",
+        "--sort",
+        help="Order groups by keeper path (default) or hash",
+    ),
+    show_hash: bool = typer.Option(
+        False,
+        "--show-hash",
+        help="Include content hash in the text listing",
+    ),
 ) -> None:
     """List exact duplicate groups and the chosen keeper for each."""
     policy = _keeper_policy(keep, prefer_root)
+    sort_by = _sort_by(sort)
     db_path: Path = ctx.obj["db_path"]
     if not db_path.exists():
         typer.echo(f"Database not found: {db_path}", err=True)
@@ -285,7 +310,7 @@ def duplicates(
 
     with _open_db(db_path) as database:
         groups = filter_groups_involving_roots(
-            find_hash_duplicates(database, policy),
+            find_hash_duplicates(database, policy, sort_by=sort_by),  # type: ignore[arg-type]
             list(under or []),
         )
 
@@ -307,7 +332,9 @@ def duplicates(
 
     typer.echo(f"Found {len(groups)} duplicate group(s):\n")
     for i, group in enumerate(groups, start=1):
-        typer.echo(f"[{i}] hash={group.key[:12]}…")
+        typer.echo(f"[{i}] {group.keeper.name}")
+        if show_hash:
+            typer.echo(f"  hash:   {group.key}")
         typer.echo(f"  keep:   {group.keeper.path}")
         for f in group.delete_candidates:
             typer.echo(f"  delete: {f.path}")

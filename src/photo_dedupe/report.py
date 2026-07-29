@@ -10,6 +10,7 @@ from photo_dedupe.db import Database, FileRecord
 from photo_dedupe.dedupe import (
     DuplicateGroup,
     KeeperPolicy,
+    SortBy,
     filter_groups_involving_roots,
     find_hash_duplicates,
     find_name_size_mismatches,
@@ -44,10 +45,11 @@ def build_report_payload(
     *,
     policy: KeeperPolicy | None = None,
     under: list[Path] | None = None,
+    sort_by: SortBy = "path",
 ) -> dict:
     policy = policy or KeeperPolicy()
     hash_groups = filter_groups_involving_roots(
-        find_hash_duplicates(db, policy), under
+        find_hash_duplicates(db, policy, sort_by=sort_by), under
     )
     name_groups = filter_groups_involving_roots(
         find_name_size_mismatches(db, policy), under
@@ -78,9 +80,12 @@ def write_json_report(
     *,
     policy: KeeperPolicy | None = None,
     under: list[Path] | None = None,
+    sort_by: SortBy = "path",
 ) -> Path:
     path = Path(path)
-    payload = build_report_payload(db, policy=policy, under=under)
+    payload = build_report_payload(
+        db, policy=policy, under=under, sort_by=sort_by
+    )
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
 
@@ -101,9 +106,12 @@ def write_markdown_report(
     *,
     policy: KeeperPolicy | None = None,
     under: list[Path] | None = None,
+    sort_by: SortBy = "path",
 ) -> Path:
     path = Path(path)
-    payload = build_report_payload(db, policy=policy, under=under)
+    payload = build_report_payload(
+        db, policy=policy, under=under, sort_by=sort_by
+    )
     lines: list[str] = [
         "# Photo Deduper Report",
         "",
@@ -145,10 +153,11 @@ def write_markdown_report(
         lines.append("")
     else:
         for i, group in enumerate(hash_dups, start=1):
-            lines.append(f"### Group {i}")
+            name = group["keeper"]["name"]
+            lines.append(f"### {i}. {name}")
             lines.append("")
-            lines.append(f"- Hash: `{group['key']}`")
             lines.append(f"- Keep: `{group['keeper']['path']}`")
+            lines.append(f"- Hash: `{group['key']}`")
             lines.append("- Delete candidates:")
             for f in group["delete_candidates"]:
                 lines.append(
@@ -186,6 +195,7 @@ def export_reports(
     fmt: str = "both",
     policy: KeeperPolicy | None = None,
     under: list[Path] | None = None,
+    sort_by: SortBy = "path",
 ) -> list[Path]:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -193,13 +203,21 @@ def export_reports(
     if fmt in ("md", "both"):
         written.append(
             write_markdown_report(
-                db, output_dir / "report.md", policy=policy, under=under
+                db,
+                output_dir / "report.md",
+                policy=policy,
+                under=under,
+                sort_by=sort_by,
             )
         )
     if fmt in ("json", "both"):
         written.append(
             write_json_report(
-                db, output_dir / "duplicates.json", policy=policy, under=under
+                db,
+                output_dir / "duplicates.json",
+                policy=policy,
+                under=under,
+                sort_by=sort_by,
             )
         )
     return written

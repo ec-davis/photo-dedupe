@@ -11,6 +11,7 @@ from photo_dedupe.db import Database, FileRecord
 from photo_dedupe.scanner import path_is_ignored
 
 KeepPolicy = Literal["oldest", "newest"]
+SortBy = Literal["path", "hash"]
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,17 @@ class KeeperPolicy:
     def __post_init__(self) -> None:
         if self.keep not in ("oldest", "newest"):
             raise ValueError(f"invalid keep policy: {self.keep}")
+
+
+def sort_duplicate_groups(
+    groups: list[DuplicateGroup],
+    *,
+    sort_by: SortBy = "path",
+) -> list[DuplicateGroup]:
+    """Order groups for display. Default is keeper path (stable folder browsing)."""
+    if sort_by == "hash":
+        return sorted(groups, key=lambda g: g.key)
+    return sorted(groups, key=lambda g: (g.keeper.path.lower(), g.key))
 
 
 def path_is_under_roots(path: str, roots: list[Path] | tuple[Path, ...]) -> bool:
@@ -141,6 +153,8 @@ def filter_groups_involving_roots(
 def find_hash_duplicates(
     db: Database,
     policy: KeeperPolicy | None = None,
+    *,
+    sort_by: SortBy = "path",
 ) -> list[DuplicateGroup]:
     policy = policy or KeeperPolicy()
     by_hash: dict[str, list[FileRecord]] = defaultdict(list)
@@ -154,11 +168,13 @@ def find_hash_duplicates(
         by_hash[record.hash].append(record)
 
     groups: list[DuplicateGroup] = []
-    for digest, files in sorted(by_hash.items(), key=lambda item: item[0]):
+    for digest, files in by_hash.items():
         if len(files) < 2:
             continue
         keeper = choose_keeper(files, policy)
-        deletes = tuple(f for f in files if f.id != keeper.id)
+        deletes = tuple(
+            f for f in sorted(files, key=lambda r: r.path) if f.id != keeper.id
+        )
         groups.append(
             DuplicateGroup(
                 key=digest,
@@ -168,7 +184,7 @@ def find_hash_duplicates(
                 delete_candidates=deletes,
             )
         )
-    return groups
+    return sort_duplicate_groups(groups, sort_by=sort_by)
 
 
 def find_name_size_mismatches(
