@@ -34,6 +34,9 @@ photo-dedupe scan ~/Pictures ~/OneDrive/Pictures
 # Custom database path
 photo-dedupe --db ~/photo-index.sqlite scan ~/Pictures
 
+# Index health summary
+photo-dedupe status
+
 # Print duplicate groups
 photo-dedupe duplicates
 # Only groups that involve files under Downloads

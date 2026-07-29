@@ -203,3 +203,20 @@ def test_purge_missing(tmp_path: Path) -> None:
         assert stats["missing"] == 0
         assert stats["present"] == 1
         assert db.get_file_by_path(str(keep.resolve())) is not None
+
+
+def test_list_sources_and_ghost_count(tmp_path: Path) -> None:
+    photos = tmp_path / "photos"
+    write_png(photos / "a.png", (255, 0, 0))
+    gone = write_png(photos / "b.png", (0, 0, 255))
+
+    db_path = tmp_path / "index.sqlite"
+    with Database(db_path) as db:
+        scan_roots(db, [photos])
+        sources = db.list_sources()
+        assert len(sources) == 1
+        assert sources[0][1] == str(photos.resolve())
+
+        gone.unlink()
+        # Stale present row (no rescan yet)
+        assert db.count_present_missing_on_disk() == 1

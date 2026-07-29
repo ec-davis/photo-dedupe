@@ -28,7 +28,7 @@ app = typer.Typer(
         "Works on local folders and cloud sync paths (Google Drive / OneDrive)."
     ),
     epilog=(
-        "Typical flow: scan → duplicates|clean → purge-missing. "
+        "Typical flow: scan → status → duplicates|clean → purge-missing. "
         "Destructive commands are dry-run unless you pass --apply."
     ),
     add_completion=False,
@@ -76,6 +76,65 @@ def main(
 def version() -> None:
     """Show package version and content-hash algorithm."""
     typer.echo(f"photo-dedupe {__version__} (hash={HASH_ALGO})")
+
+
+@app.command()
+def status(
+    ctx: typer.Context,
+    check_disk: bool = typer.Option(
+        True,
+        "--check-disk/--no-check-disk",
+        help="Count present index rows whose files are missing on disk (slower on large indexes)",
+    ),
+) -> None:
+    """Show index health: sources, file counts, and duplicate summary."""
+    db_path: Path = ctx.obj["db_path"]
+    if not db_path.exists():
+        typer.echo(f"Database not found: {db_path}", err=True)
+        raise typer.Exit(code=1)
+
+    with _open_db(db_path) as database:
+        stats = database.count_stats()
+        sources = database.list_sources()
+        groups = find_hash_duplicates(database)
+        ghost_count = (
+            database.count_present_missing_on_disk() if check_disk else None
+        )
+
+    extra = sum(len(g.delete_candidates) for g in groups)
+    reclaimable = sum(sum(f.size for f in g.delete_candidates) for g in groups)
+
+    typer.echo(f"Database: {db_path.resolve()}")
+    typer.echo(f"Hash algorithm: {HASH_ALGO}")
+    typer.echo("")
+    typer.echo(f"Sources ({len(sources)}):")
+    if not sources:
+        typer.echo("  (none)")
+    else:
+        for _sid, root, added in sources:
+            typer.echo(f"  - {root}")
+            typer.echo(f"      added: {added}")
+    typer.echo("")
+    typer.echo("Files")
+    typer.echo(f"  Present:  {stats['present']}")
+    typer.echo(f"  Hashed:   {stats['hashed']}")
+    typer.echo(f"  Missing:  {stats['missing']}")
+    typer.echo(f"  Size:     {format_bytes(stats['present_bytes'])}")
+    if ghost_count is not None:
+        typer.echo(f"  Ghosts:   {ghost_count}  (present in index, missing on disk)")
+    typer.echo("")
+    typer.echo("Duplicates")
+    typer.echo(f"  Exact groups: {len(groups)}")
+    typer.echo(f"  Extra files:  {extra}")
+    typer.echo(f"  Reclaimable:  {format_bytes(reclaimable)}")
+    if stats["missing"] > 0:
+        typer.echo("")
+        typer.echo("Tip: run `photo-dedupe purge-missing` to drop stale missing rows.")
+    if ghost_count:
+        typer.echo(
+            "Tip: run `photo-dedupe scan <roots>` then "
+            "`photo-dedupe purge-missing --apply` to clear ghosts."
+        )
 
 
 @app.command()

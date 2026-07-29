@@ -195,6 +195,20 @@ class Database:
         ).fetchall()
         return [_row_to_file(r) for r in rows]
 
+    def list_sources(self) -> list[tuple[int, str, str]]:
+        """Return (id, root_path, added_at) for each source, ordered by path."""
+        rows = self._conn.execute(
+            "SELECT id, root_path, added_at FROM sources ORDER BY root_path"
+        ).fetchall()
+        return [(int(r["id"]), str(r["root_path"]), str(r["added_at"])) for r in rows]
+
+    def count_present_missing_on_disk(self) -> int:
+        """Count present rows whose path is no longer a file on disk."""
+        rows = self._conn.execute(
+            "SELECT path FROM files WHERE status = 'present'"
+        ).fetchall()
+        return sum(1 for r in rows if not Path(str(r["path"])).is_file())
+
     def count_stats(self) -> dict[str, int]:
         present = self._conn.execute(
             "SELECT COUNT(*) AS c FROM files WHERE status = 'present'"
