@@ -133,3 +133,28 @@ def test_unique_sizes_not_hashed(tmp_path: Path) -> None:
         result = scan_roots(db, [photos])
         assert result.stats.hashed == 0
         assert find_hash_duplicates(db) == []
+
+
+def test_purge_missing(tmp_path: Path) -> None:
+    photos = tmp_path / "photos"
+    keep = write_png(photos / "keep.png", (255, 0, 0))
+    gone = write_png(photos / "gone.png", (0, 0, 255))
+
+    db_path = tmp_path / "index.sqlite"
+    with Database(db_path) as db:
+        scan_roots(db, [photos])
+        assert db.count_stats()["present"] == 2
+
+        gone.unlink()
+        scan_roots(db, [photos])
+        stats = db.count_stats()
+        assert stats["present"] == 1
+        assert stats["missing"] == 1
+        assert len(db.missing_files()) == 1
+
+        removed = db.purge_missing()
+        assert removed == 1
+        stats = db.count_stats()
+        assert stats["missing"] == 0
+        assert stats["present"] == 1
+        assert db.get_file_by_path(str(keep.resolve())) is not None

@@ -219,6 +219,18 @@ class Database:
             "present_bytes": int(present_bytes),
         }
 
+    def missing_files(self) -> list[FileRecord]:
+        rows = self._conn.execute(
+            "SELECT * FROM files WHERE status = 'missing' ORDER BY path"
+        ).fetchall()
+        return [_row_to_file(r) for r in rows]
+
+    def purge_missing(self) -> int:
+        """Delete all rows with status='missing'. Returns number of rows removed."""
+        cur = self._conn.execute("DELETE FROM files WHERE status = 'missing'")
+        self._conn.commit()
+        return int(cur.rowcount)
+
     def commit(self) -> None:
         self._conn.commit()
 

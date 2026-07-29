@@ -287,5 +287,55 @@ def clean(
             typer.echo("Use --detailed for a per-file preview.")
 
 
+@app.command("purge-missing")
+def purge_missing(
+    ctx: typer.Context,
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Actually remove missing rows from the index (default is dry-run)",
+    ),
+    detailed: bool = typer.Option(
+        False,
+        "--detailed",
+        "-d",
+        help="List missing paths that would be purged",
+    ),
+) -> None:
+    """Remove index rows for files no longer found on disk (after a scan)."""
+    db_path: Path = ctx.obj["db_path"]
+    if not db_path.exists():
+        typer.echo(f"Database not found: {db_path}", err=True)
+        raise typer.Exit(code=1)
+
+    with _open_db(db_path) as database:
+        stats = database.count_stats()
+        missing = database.missing_files()
+        missing_bytes = sum(f.size for f in missing)
+
+        mode = "APPLY" if apply else "DRY-RUN"
+        typer.echo(f"{mode} purge-missing summary")
+        typer.echo(f"  Present files:   {stats['present']}")
+        typer.echo(f"  Missing rows:    {len(missing)}")
+        typer.echo(f"  Missing size:    {format_bytes(missing_bytes)}")
+
+        if not missing:
+            typer.echo("\nNo missing rows to purge.")
+            return
+
+        if detailed:
+            typer.echo("")
+            for record in missing:
+                typer.echo(f"  {record.path} ({format_bytes(record.size)})")
+
+        if apply:
+            removed = database.purge_missing()
+            typer.echo(f"\nPurged {removed} missing row(s) from the index.")
+        else:
+            typer.echo("\nDry-run only. Re-run with --apply to purge.")
+            if not detailed:
+                typer.echo("Use --detailed to list missing paths.")
+
+
 if __name__ == "__main__":
     app()

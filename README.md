@@ -53,6 +53,11 @@ photo-dedupe clean --root ~/Downloads --root ~/OneDrive/Camera\ Roll -d
 photo-dedupe clean --apply
 # Same, limited to a folder
 photo-dedupe clean --root ~/Downloads --apply
+
+# Preview / remove stale index rows (files gone since last scan)
+photo-dedupe purge-missing
+photo-dedupe purge-missing --detailed
+photo-dedupe purge-missing --apply
 ```
 
 ## How it works
