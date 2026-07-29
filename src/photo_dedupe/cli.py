@@ -22,6 +22,7 @@ from photo_dedupe.organize import (
     apply_organize_plan,
     build_organize_plan,
     find_emptied_directories,
+    remove_empty_directories,
 )
 from photo_dedupe.report import export_reports, format_bytes
 from photo_dedupe.scanner import DEFAULT_EXTENSIONS, scan_roots
@@ -161,6 +162,14 @@ def scan(
     files that share a size with another present file.
     """
     db_path: Path = ctx.obj["db_path"]
+    for root in paths:
+        if not root.exists():
+            typer.echo(
+                f"Root not found (skipped): {root}\n"
+                f"  Tip: quote paths with spaces, e.g. "
+                f'"G:\\My Drive\\Photography\\_unsorted"',
+                err=True,
+            )
     with _open_db(db_path) as database:
         result = scan_roots(
             database,
@@ -170,6 +179,10 @@ def scan(
         )
         stats = result.stats
         db_stats = database.count_stats()
+
+    if stats.roots == 0:
+        typer.echo("No valid roots scanned.", err=True)
+        raise typer.Exit(code=1)
 
     typer.echo(f"Database: {db_path}")
     typer.echo(f"Roots scanned: {stats.roots}")
@@ -470,6 +483,8 @@ def clean(
         "  photo-dedupe organize --dest ~/Pictures/Library --under ~/Downloads\n"
         "  photo-dedupe organize --dest ~/Pictures/Library --under ~/Downloads -d\n"
         "  photo-dedupe organize --dest ~/Pictures/Library --under ~/Downloads --apply\n"
+        "  photo-dedupe organize --dest ~/Pictures/Library --under ~/Downloads "
+        "--apply --remove-empty-dirs\n"
     ),
 )
 def organize(
@@ -489,6 +504,11 @@ def organize(
         "--apply",
         help="Move files on disk (default is dry-run preview only)",
     ),
+    remove_empty_dirs: bool = typer.Option(
+        False,
+        "--remove-empty-dirs",
+        help="After --apply, delete directories emptied by this organize run (opt-in)",
+    ),
     detailed: bool = typer.Option(
         False,
         "--detailed",
@@ -505,7 +525,15 @@ def organize(
 
     Date comes from EXIF DateTimeOriginal when available, otherwise file mtime.
     Files already under --dest are skipped. Index paths are updated on --apply.
+    Empty source directories are reported; delete them only with --remove-empty-dirs.
     """
+    if remove_empty_dirs and not apply:
+        typer.echo(
+            "--remove-empty-dirs requires --apply (dry-run only reports would-empty dirs).",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
     db_path: Path = ctx.obj["db_path"]
     if not db_path.exists():
         typer.echo(f"Database not found: {db_path}", err=True)
@@ -533,6 +561,9 @@ def organize(
         typer.echo(f"  Date from EXIF:  {exif_count}")
         typer.echo(f"  Date from mtime: {mtime_count}")
         typer.echo(f"  Skipped:         {len(skipped)}")
+        typer.echo(
+            f"  Remove empty dirs: {'yes' if remove_empty_dirs else 'no'}"
+        )
 
         source_paths = [item.source for item in to_move]
         emptied: list[Path] = []
@@ -575,6 +606,15 @@ def organize(
                 under=under_list or None,
                 ignore_files_still_present=False,
             )
+            removed_dirs: list[Path] = []
+            prune_errors: list[str] = []
+            if remove_empty_dirs and emptied_after:
+                removed_dirs, prune_errors = remove_empty_directories(
+                    emptied_after,
+                    protect=[plan.dest_root],
+                )
+                errors.extend(prune_errors)
+
             log_path = log_file or (
                 Path.cwd() / "logs" / "photo-dedupe-organize.log"
             )
@@ -584,16 +624,41 @@ def organize(
             lines.extend(f"{src} -> {dst}" for src, dst in moved)
             if emptied_after:
                 lines.append("")
-                lines.append("# emptied directories (not deleted)")
+                if remove_empty_dirs:
+                    lines.append("# emptied directories")
+                else:
+                    lines.append("# emptied directories (not deleted)")
                 lines.extend(str(p) for p in emptied_after)
+            if removed_dirs:
+                lines.append("")
+                lines.append("# removed empty directories")
+                lines.extend(str(p) for p in removed_dirs)
             if errors:
                 lines.append("")
                 lines.append("# errors")
                 lines.extend(errors)
             log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
             typer.echo(f"\nMoved {len(moved)} file(s). Log: {log_path}")
-            typer.echo(f"Emptied directories: {len(emptied_after)} (not deleted)")
-            if emptied_after:
+            if remove_empty_dirs:
+                typer.echo(f"Removed empty directories: {len(removed_dirs)}")
+                for directory in removed_dirs:
+                    typer.echo(f"  {directory}")
+                leftover = [
+                    d
+                    for d in emptied_after
+                    if d.resolve() not in {r.resolve() for r in removed_dirs}
+                ]
+                if leftover:
+                    typer.echo(
+                        f"Still present (not empty or protected): {len(leftover)}"
+                    )
+                    for directory in leftover:
+                        typer.echo(f"  {directory}")
+            else:
+                typer.echo(
+                    f"Emptied directories: {len(emptied_after)} (not deleted; "
+                    "pass --remove-empty-dirs to prune)"
+                )
                 for directory in emptied_after:
                     typer.echo(f"  {directory}")
             if errors:

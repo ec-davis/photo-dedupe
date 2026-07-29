@@ -75,6 +75,7 @@ photo-dedupe purge-missing --apply
 photo-dedupe organize --dest ~/Pictures/Library --under ~/Downloads
 photo-dedupe organize --dest ~/Pictures/Library --under ~/Downloads -d
 photo-dedupe organize --dest ~/Pictures/Library --under ~/Downloads --apply
+photo-dedupe organize --dest ~/Pictures/Library --under ~/Downloads --apply --remove-empty-dirs
 ```
 
 ## How it works
@@ -86,7 +87,7 @@ photo-dedupe organize --dest ~/Pictures/Library --under ~/Downloads --apply
 5. Exact duplicate group = same content hash
 6. Reports also flag same name + size with different hashes
 7. Organize moves files into `dest/YYYY/YYYY-MM/` using EXIF date when available, else mtime
-8. Organize reports directories that would be / were emptied (does not delete them)
+8. Organize reports directories that would be / were emptied; opt-in `--remove-empty-dirs` deletes them after `--apply`
 
 Default hash algorithm is **BLAKE3** when the `blake3` package is installed, otherwise **SHA-256**.
 

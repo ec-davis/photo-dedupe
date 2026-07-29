@@ -18,6 +18,7 @@ from photo_dedupe.organize import (
     build_organize_plan,
     dated_subdir,
     find_emptied_directories,
+    remove_empty_directories,
 )
 from photo_dedupe.report import build_report_payload, export_reports
 from photo_dedupe.scanner import scan_roots
@@ -286,3 +287,20 @@ def test_emptied_dirs_ignores_dirs_with_remaining_files(tmp_path: Path) -> None:
         [moving], under=[folder], ignore_files_still_present=True
     )
     assert emptied == []
+
+
+def test_remove_empty_directories(tmp_path: Path) -> None:
+    nested = tmp_path / "inbox" / "2022" / "dups"
+    nested.mkdir(parents=True)
+    protect = tmp_path / "orgdest"
+    protect.mkdir()
+    (protect / "keep").mkdir()
+
+    removed, errors = remove_empty_directories(
+        [nested, nested.parent, nested.parent.parent],
+        protect=[protect],
+    )
+    assert errors == []
+    assert nested.resolve() in {p.resolve() for p in removed}
+    assert not nested.exists()
+    assert protect.exists()

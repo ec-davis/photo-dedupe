@@ -315,3 +315,53 @@ def find_emptied_directories(
         )
     ]
     return sorted(emptied, key=lambda p: (len(p.parts), str(p).lower()))
+
+
+def remove_empty_directories(
+    directories: list[Path],
+    *,
+    protect: list[Path] | None = None,
+) -> tuple[list[Path], list[str]]:
+    """Remove empty directories deepest-first. Never deletes protected paths.
+
+    A directory is removed only if it exists and ``iterdir()`` is empty.
+    Returns (removed dirs, error messages).
+    """
+    protected: set[Path] = set()
+    for path in protect or []:
+        try:
+            protected.add(path.resolve())
+        except OSError:
+            protected.add(path)
+
+    def _is_protected(directory: Path) -> bool:
+        try:
+            resolved = directory.resolve()
+        except OSError:
+            resolved = directory
+        for p in protected:
+            if resolved == p:
+                return True
+            try:
+                resolved.relative_to(p)
+                return True
+            except ValueError:
+                continue
+        return False
+
+    removed: list[Path] = []
+    errors: list[str] = []
+    ordered = sorted(directories, key=lambda p: len(p.parts), reverse=True)
+    for directory in ordered:
+        if _is_protected(directory):
+            continue
+        try:
+            if not directory.is_dir():
+                continue
+            if any(directory.iterdir()):
+                continue
+            directory.rmdir()
+            removed.append(directory)
+        except OSError as exc:
+            errors.append(f"{directory}: {exc}")
+    return removed, errors
