@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from photo_dedupe.db import Database, FileRecord
-from photo_dedupe.dedupe import choose_keeper, find_hash_duplicates
+from photo_dedupe.dedupe import (
+    choose_keeper,
+    filter_groups_by_roots,
+    find_hash_duplicates,
+)
 from photo_dedupe.hashing import hash_file
 from photo_dedupe.report import build_report_payload, export_reports
 from photo_dedupe.scanner import scan_roots
@@ -67,6 +71,35 @@ def test_choose_keeper_oldest_mtime(tmp_path: Path) -> None:
         status="present",
     )
     assert choose_keeper([newer, older]) == older
+
+
+def test_filter_groups_by_roots(tmp_path: Path) -> None:
+    keep_dir = tmp_path / "library"
+    junk_dir = tmp_path / "downloads"
+    write_png(keep_dir / "original.png", (255, 0, 0))
+    write_png(junk_dir / "copy.png", (255, 0, 0))
+    # Make original older so it remains the keeper
+    original = keep_dir / "original.png"
+    copy = junk_dir / "copy.png"
+    import os
+
+    os.utime(original, (1000, 1000))
+    os.utime(copy, (2000, 2000))
+
+    db_path = tmp_path / "index.sqlite"
+    with Database(db_path) as db:
+        scan_roots(db, [tmp_path])
+        groups = find_hash_duplicates(db)
+
+    assert len(groups) == 1
+    limited = filter_groups_by_roots(groups, [junk_dir])
+    assert len(limited) == 1
+    assert len(limited[0].delete_candidates) == 1
+    assert limited[0].delete_candidates[0].path == str(copy.resolve())
+    assert limited[0].keeper.path == str(original.resolve())
+
+    none = filter_groups_by_roots(groups, [tmp_path / "other"])
+    assert none == []
 
 
 def test_report_export(tmp_path: Path) -> None:

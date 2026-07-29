@@ -208,11 +208,15 @@ class Database:
         sources = self._conn.execute("SELECT COUNT(*) AS c FROM sources").fetchone()[
             "c"
         ]
+        present_bytes = self._conn.execute(
+            "SELECT COALESCE(SUM(size), 0) AS s FROM files WHERE status = 'present'"
+        ).fetchone()["s"]
         return {
             "sources": int(sources),
             "present": int(present),
             "missing": int(missing),
             "hashed": int(hashed),
+            "present_bytes": int(present_bytes),
         }
 
     def commit(self) -> None:

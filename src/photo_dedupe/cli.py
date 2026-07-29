@@ -11,9 +11,9 @@ import typer
 
 from photo_dedupe import __version__
 from photo_dedupe.db import Database
-from photo_dedupe.dedupe import find_hash_duplicates
+from photo_dedupe.dedupe import filter_groups_by_roots, find_hash_duplicates
 from photo_dedupe.hashing import HASH_ALGO
-from photo_dedupe.report import export_reports
+from photo_dedupe.report import export_reports, format_bytes
 from photo_dedupe.scanner import DEFAULT_EXTENSIONS, scan_roots
 
 app = typer.Typer(
@@ -175,6 +175,18 @@ def clean(
         "--apply",
         help="Actually delete duplicate files (without this flag, dry-run only)",
     ),
+    detailed: bool = typer.Option(
+        False,
+        "--detailed",
+        "-d",
+        help="Show per-file keep/delete preview (default dry-run is summary only)",
+    ),
+    root: Optional[list[Path]] = typer.Option(
+        None,
+        "--root",
+        "-r",
+        help="Only delete duplicates under this directory (repeatable)",
+    ),
     log_file: Optional[Path] = typer.Option(
         None,
         "--log-file",
@@ -183,6 +195,7 @@ def clean(
 ) -> None:
     """Remove exact duplicate files using the keeper policy (dry-run by default)."""
     do_delete = apply
+    roots = list(root or [])
 
     db_path: Path = ctx.obj["db_path"]
     if not db_path.exists():
@@ -190,34 +203,65 @@ def clean(
         raise typer.Exit(code=1)
 
     with _open_db(db_path) as database:
-        groups = find_hash_duplicates(database)
+        stats = database.count_stats()
+        present_count = stats["present"]
+        size_before = stats["present_bytes"]
+        all_groups = find_hash_duplicates(database)
 
+    groups = filter_groups_by_roots(all_groups, roots)
     candidates = [f for g in groups for f in g.delete_candidates]
-    if not candidates:
-        typer.echo("No duplicate files to remove.")
-        return
+    size_to_delete = sum(f.size for f in candidates)
+    size_after = size_before - size_to_delete
 
     mode = "APPLY" if do_delete else "DRY-RUN"
-    typer.echo(f"{mode}: {len(candidates)} file(s) in {len(groups)} group(s)\n")
+    typer.echo(f"{mode} summary")
+    if roots:
+        typer.echo("  Limited to roots:")
+        for r in roots:
+            typer.echo(f"    - {r.resolve()}")
+    typer.echo(f"  Total files found:      {present_count}")
+    typer.echo(f"  Duplicate groups found: {len(all_groups)}")
+    typer.echo(f"  Files to delete:        {len(candidates)}")
+    typer.echo(f"  Files after clean:      {present_count - len(candidates)}")
+    typer.echo(f"  Total size (before):    {format_bytes(size_before)}")
+    typer.echo(f"  Size to delete:         {format_bytes(size_to_delete)}")
+    typer.echo(f"  Total size (after):     {format_bytes(size_after)}")
+
+    if not candidates:
+        if roots:
+            typer.echo("\nNo duplicate files to remove under the given root(s).")
+        else:
+            typer.echo("\nNo duplicate files to remove.")
+        return
 
     deleted: list[str] = []
     errors: list[str] = []
 
-    for group in groups:
-        typer.echo(f"keep: {group.keeper.path}")
-        for f in group.delete_candidates:
-            if do_delete:
+    if detailed and not do_delete:
+        typer.echo("")
+        for group in groups:
+            typer.echo(f"keep: {group.keeper.path}")
+            for f in group.delete_candidates:
+                typer.echo(
+                    f"  would delete: {f.path} ({format_bytes(f.size)})"
+                )
+
+    if do_delete:
+        if detailed:
+            typer.echo("")
+        for group in groups:
+            if detailed:
+                typer.echo(f"keep: {group.keeper.path}")
+            for f in group.delete_candidates:
                 try:
                     Path(f.path).unlink()
                     deleted.append(f.path)
-                    typer.echo(f"  deleted: {f.path}")
+                    if detailed:
+                        typer.echo(f"  deleted: {f.path}")
                 except OSError as exc:
                     errors.append(f"{f.path}: {exc}")
                     typer.echo(f"  error: {f.path} ({exc})", err=True)
-            else:
-                typer.echo(f"  would delete: {f.path}")
 
-    if do_delete:
         log_path = log_file or (Path.cwd() / "photo-dedupe-delete.log")
         stamp = datetime.now(timezone.utc).isoformat()
         lines = [f"# photo-dedupe delete log {stamp}", ""]
@@ -227,12 +271,20 @@ def clean(
             lines.append("# errors")
             lines.extend(errors)
         log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        typer.echo(f"\nDeleted {len(deleted)} file(s). Log: {log_path}")
+        deleted_bytes = sum(
+            f.size for f in candidates if f.path in set(deleted)
+        )
+        typer.echo(
+            f"\nDeleted {len(deleted)} file(s) "
+            f"({format_bytes(deleted_bytes)}). Log: {log_path}"
+        )
         if errors:
             typer.echo(f"{len(errors)} error(s).", err=True)
             raise typer.Exit(code=1)
     else:
         typer.echo("\nDry-run only. Re-run with --apply to delete.")
+        if not detailed:
+            typer.echo("Use --detailed for a per-file preview.")
 
 
 if __name__ == "__main__":

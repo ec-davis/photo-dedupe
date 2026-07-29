@@ -40,11 +40,19 @@ photo-dedupe duplicates
 # Write report.md and duplicates.json
 photo-dedupe report --format both -o .
 
-# Dry-run delete (default)
+# Dry-run summary (files to delete + total size)
 photo-dedupe clean
+
+# Dry-run with per-file keep/delete listing
+photo-dedupe clean --detailed
+
+# Only consider deletes under one or more directories
+photo-dedupe clean --root ~/Downloads --root ~/OneDrive/Camera\ Roll -d
 
 # Actually delete extras (keeps oldest mtime; shortest path on ties)
 photo-dedupe clean --apply
+# Same, limited to a folder
+photo-dedupe clean --root ~/Downloads --apply
 ```
 
 ## How it works

@@ -63,7 +63,7 @@ def write_json_report(db: Database, path: Path) -> Path:
     return path
 
 
-def _format_bytes(n: int) -> str:
+def format_bytes(n: int) -> str:
     units = ["B", "KB", "MB", "GB", "TB"]
     size = float(n)
     for unit in units:
@@ -90,7 +90,7 @@ def write_markdown_report(db: Database, path: Path) -> Path:
         f"- Missing (from prior scans): {payload['stats']['missing']}",
         f"- Exact duplicate groups: {payload['duplicate_groups']}",
         f"- Extra duplicate files: {payload['duplicate_files_extra']}",
-        f"- Reclaimable: {_format_bytes(payload['reclaimable_bytes'])}",
+        f"- Reclaimable: {format_bytes(payload['reclaimable_bytes'])}",
         "",
         "## Exact duplicates (same content hash)",
         "",
@@ -109,7 +109,7 @@ def write_markdown_report(db: Database, path: Path) -> Path:
             lines.append("- Delete candidates:")
             for f in group["delete_candidates"]:
                 lines.append(
-                    f"  - `{f['path']}` ({_format_bytes(f['size'])})"
+                    f"  - `{f['path']}` ({format_bytes(f['size'])})"
                 )
             lines.append("")
 

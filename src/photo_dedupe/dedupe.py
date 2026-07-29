@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections import defaultdict
+from dataclasses import dataclass, replace
+from pathlib import Path
 
 from photo_dedupe.db import Database, FileRecord
 
@@ -20,6 +21,54 @@ class DuplicateGroup:
 def choose_keeper(files: list[FileRecord]) -> FileRecord:
     """Keep oldest mtime; tie-break on shortest path, then path string."""
     return min(files, key=lambda f: (f.mtime, len(f.path), f.path))
+
+
+def path_is_under_roots(path: str, roots: list[Path]) -> bool:
+    """True if path is inside (or equal to) one of the resolved roots."""
+    if not roots:
+        return True
+    try:
+        target = Path(path).resolve()
+    except OSError:
+        target = Path(path)
+    for root in roots:
+        try:
+            resolved = root.resolve()
+        except OSError:
+            resolved = root
+        if target == resolved:
+            return True
+        try:
+            target.relative_to(resolved)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def filter_groups_by_roots(
+    groups: list[DuplicateGroup],
+    roots: list[Path] | None,
+) -> list[DuplicateGroup]:
+    """Keep global keepers; only delete candidates under the given roots.
+
+    When roots is empty/None, groups are unchanged. Groups with no remaining
+    delete candidates are dropped.
+    """
+    if not roots:
+        return groups
+
+    filtered: list[DuplicateGroup] = []
+    for group in groups:
+        candidates = tuple(
+            f
+            for f in group.delete_candidates
+            if path_is_under_roots(f.path, roots)
+        )
+        if not candidates:
+            continue
+        filtered.append(replace(group, delete_candidates=candidates))
+    return filtered
 
 
 def find_hash_duplicates(db: Database) -> list[DuplicateGroup]:
