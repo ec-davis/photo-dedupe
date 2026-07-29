@@ -257,6 +257,18 @@ class Database:
         self._conn.commit()
         return int(cur.rowcount)
 
+    def update_file_path(self, old_path: str, new_path: str, new_name: str) -> None:
+        """Update a file row after an on-disk move."""
+        self._conn.execute(
+            """
+            UPDATE files
+            SET path = ?, name = ?, status = 'present'
+            WHERE path = ?
+            """,
+            (new_path, new_name, old_path),
+        )
+        self._conn.commit()
+
     def commit(self) -> None:
         self._conn.commit()
 

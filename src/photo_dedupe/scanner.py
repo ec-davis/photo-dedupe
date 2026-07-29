@@ -28,6 +28,14 @@ DEFAULT_EXTENSIONS = frozenset(
     }
 )
 
+# Directory names skipped while walking (organize destinations, etc.)
+IGNORED_DIR_NAMES = frozenset({"orgdest"})
+
+
+def path_is_ignored(path: Path | str) -> bool:
+    """True if any path component is an ignored directory name."""
+    return any(part.lower() in IGNORED_DIR_NAMES for part in Path(path).parts)
+
 
 @dataclass
 class ScanStats:
@@ -39,6 +47,7 @@ class ScanStats:
     unreadable: int = 0
     hash_errors: int = 0
     skipped_non_image: int = 0
+    skipped_ignored_dirs: int = 0
 
 
 @dataclass
@@ -51,6 +60,7 @@ def iter_image_files(
     *,
     extensions: frozenset[str] = DEFAULT_EXTENSIONS,
     follow_symlinks: bool = False,
+    ignored_dir_names: frozenset[str] = IGNORED_DIR_NAMES,
 ) -> list[Path]:
     root = Path(root)
     found: list[Path] = []
@@ -67,6 +77,8 @@ def iter_image_files(
                 if entry.is_symlink() and not follow_symlinks:
                     continue
                 if entry.is_dir(follow_symlinks=follow_symlinks):
+                    if entry.name.lower() in ignored_dir_names:
+                        continue
                     _walk(entry)
                 elif entry.is_file(follow_symlinks=follow_symlinks):
                     if entry.suffix.lower() in extensions:
@@ -75,8 +87,11 @@ def iter_image_files(
                 continue
 
     if root.is_file():
-        if root.suffix.lower() in extensions:
+        if root.suffix.lower() in extensions and not path_is_ignored(root):
             found.append(root)
+        return found
+
+    if root.name.lower() in ignored_dir_names:
         return found
 
     _walk(root)
@@ -96,6 +111,9 @@ def scan_roots(
     for root in roots:
         root = Path(root)
         if not root.exists():
+            continue
+        if root.is_dir() and root.name.lower() in IGNORED_DIR_NAMES:
+            stats.skipped_ignored_dirs += 1
             continue
         stats.roots += 1
         source_id = db.upsert_source(root)

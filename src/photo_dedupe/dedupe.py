@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from photo_dedupe.db import Database, FileRecord
+from photo_dedupe.scanner import path_is_ignored
 
 KeepPolicy = Literal["oldest", "newest"]
 
@@ -145,6 +146,8 @@ def find_hash_duplicates(
     by_hash: dict[str, list[FileRecord]] = defaultdict(list)
     for record in db.present_files_with_hash():
         assert record.hash is not None
+        if path_is_ignored(record.path):
+            continue
         # Skip stale index rows whose files are already gone from disk.
         if not Path(record.path).is_file():
             continue
@@ -176,6 +179,8 @@ def find_name_size_mismatches(
     policy = policy or KeeperPolicy()
     by_key: dict[tuple[str, int], list[FileRecord]] = defaultdict(list)
     for record in db.present_files():
+        if path_is_ignored(record.path):
+            continue
         if not Path(record.path).is_file():
             continue
         by_key[(record.name.lower(), record.size)].append(record)

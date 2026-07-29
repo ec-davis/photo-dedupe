@@ -12,6 +12,13 @@ from photo_dedupe.dedupe import (
     find_hash_duplicates,
 )
 from photo_dedupe.hashing import hash_file
+from photo_dedupe.organize import (
+    allocate_dest,
+    apply_organize_plan,
+    build_organize_plan,
+    dated_subdir,
+    find_emptied_directories,
+)
 from photo_dedupe.report import build_report_payload, export_reports
 from photo_dedupe.scanner import scan_roots
 
@@ -220,3 +227,62 @@ def test_list_sources_and_ghost_count(tmp_path: Path) -> None:
         gone.unlink()
         # Stale present row (no rescan yet)
         assert db.count_present_missing_on_disk() == 1
+
+
+def test_dated_subdir_and_allocate_dest(tmp_path: Path) -> None:
+    from datetime import datetime
+
+    assert dated_subdir(datetime(2023, 7, 4, 12, 0, 0)) == Path("2023") / "2023-07"
+    claimed: set[Path] = set()
+    first = allocate_dest(tmp_path / "a.png", claimed)
+    second = allocate_dest(tmp_path / "a.png", claimed)
+    assert first == tmp_path / "a.png"
+    assert second == tmp_path / "a_1.png"
+
+
+def test_organize_moves_and_updates_index(tmp_path: Path) -> None:
+    src = tmp_path / "inbox"
+    dest = tmp_path / "library"
+    photo = write_png(src / "shot.png", (255, 0, 0))
+    os.utime(photo, (1_688_428_800, 1_688_428_800))  # ~2023-07-04 UTC-ish
+
+    db_path = tmp_path / "index.sqlite"
+    with Database(db_path) as db:
+        scan_roots(db, [src])
+        plan = build_organize_plan(db, dest, under=[src])
+        assert len(plan.to_move) == 1
+        item = plan.to_move[0]
+        assert item.dest.parent.name == "2023-07"
+        assert item.dest.parent.parent.name == "2023"
+
+        emptied = find_emptied_directories(
+            [item.source], under=[src], ignore_files_still_present=True
+        )
+        assert src.resolve() in {p.resolve() for p in emptied}
+
+        moved, errors = apply_organize_plan(db, plan)
+        assert errors == []
+        assert len(moved) == 1
+        assert not photo.exists()
+        assert moved[0][1].is_file()
+        assert db.get_file_by_path(str(photo.resolve())) is None
+        assert db.get_file_by_path(str(moved[0][1].resolve())) is not None
+
+        emptied_after = find_emptied_directories(
+            [moved[0][0]], under=[src], ignore_files_still_present=False
+        )
+        assert src.resolve() in {p.resolve() for p in emptied_after}
+
+        plan2 = build_organize_plan(db, dest)
+        assert plan2.to_move == []
+        assert any(i.skip_reason == "already under destination" for i in plan2.skipped)
+
+
+def test_emptied_dirs_ignores_dirs_with_remaining_files(tmp_path: Path) -> None:
+    folder = tmp_path / "inbox"
+    moving = write_png(folder / "move_me.png", (255, 0, 0))
+    write_png(folder / "stay.png", (0, 0, 255))
+    emptied = find_emptied_directories(
+        [moving], under=[folder], ignore_files_still_present=True
+    )
+    assert emptied == []

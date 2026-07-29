@@ -70,16 +70,23 @@ photo-dedupe clean --keep newest --prefer-root ~/Pictures -d
 photo-dedupe purge-missing
 photo-dedupe purge-missing --detailed
 photo-dedupe purge-missing --apply
+
+# Move files into a dated library layout (YYYY/YYYY-MM), dry-run first
+photo-dedupe organize --dest ~/Pictures/Library --under ~/Downloads
+photo-dedupe organize --dest ~/Pictures/Library --under ~/Downloads -d
+photo-dedupe organize --dest ~/Pictures/Library --under ~/Downloads --apply
 ```
 
 ## How it works
 
-1. Walk roots for common image extensions (does not follow symlinks by default)
+1. Walk roots for common image extensions (does not follow symlinks by default; skips `orgdest` dirs)
 2. Store path, name, size, mtime in SQLite
 3. Reuse hashes when size + mtime are unchanged
 4. Hash only files that share a size with another present file
 5. Exact duplicate group = same content hash
 6. Reports also flag same name + size with different hashes
+7. Organize moves files into `dest/YYYY/YYYY-MM/` using EXIF date when available, else mtime
+8. Organize reports directories that would be / were emptied (does not delete them)
 
 Default hash algorithm is **BLAKE3** when the `blake3` package is installed, otherwise **SHA-256**.
 

@@ -18,6 +18,11 @@ from photo_dedupe.dedupe import (
     find_hash_duplicates,
 )
 from photo_dedupe.hashing import HASH_ALGO
+from photo_dedupe.organize import (
+    apply_organize_plan,
+    build_organize_plan,
+    find_emptied_directories,
+)
 from photo_dedupe.report import export_reports, format_bytes
 from photo_dedupe.scanner import DEFAULT_EXTENSIONS, scan_roots
 
@@ -28,7 +33,7 @@ app = typer.Typer(
         "Works on local folders and cloud sync paths (Google Drive / OneDrive)."
     ),
     epilog=(
-        "Typical flow: scan → status → duplicates|clean → purge-missing. "
+        "Typical flow: scan → status → clean → organize → purge-missing. "
         "Destructive commands are dry-run unless you pass --apply."
     ),
     add_completion=False,
@@ -457,6 +462,152 @@ def clean(
         typer.echo("\nDry-run only. Re-run with --apply to delete.")
         if not detailed:
             typer.echo("Use --detailed for a per-file preview.")
+
+
+@app.command(
+    epilog=(
+        "Examples:\n"
+        "  photo-dedupe organize --dest ~/Pictures/Library --under ~/Downloads\n"
+        "  photo-dedupe organize --dest ~/Pictures/Library --under ~/Downloads -d\n"
+        "  photo-dedupe organize --dest ~/Pictures/Library --under ~/Downloads --apply\n"
+    ),
+)
+def organize(
+    ctx: typer.Context,
+    dest: Path = typer.Option(
+        ...,
+        "--dest",
+        help="Destination library root (files move into YYYY/YYYY-MM/ under this)",
+    ),
+    under: Optional[list[Path]] = typer.Option(
+        None,
+        "--under",
+        help="Only organize files under this path (repeatable)",
+    ),
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Move files on disk (default is dry-run preview only)",
+    ),
+    detailed: bool = typer.Option(
+        False,
+        "--detailed",
+        "-d",
+        help="Show per-file source → destination mapping",
+    ),
+    log_file: Optional[Path] = typer.Option(
+        None,
+        "--log-file",
+        help="Path for the move log when using --apply (default: ./logs/photo-dedupe-organize.log)",
+    ),
+) -> None:
+    """Move indexed photos into dest/YYYY/YYYY-MM/ (dry-run by default).
+
+    Date comes from EXIF DateTimeOriginal when available, otherwise file mtime.
+    Files already under --dest are skipped. Index paths are updated on --apply.
+    """
+    db_path: Path = ctx.obj["db_path"]
+    if not db_path.exists():
+        typer.echo(f"Database not found: {db_path}", err=True)
+        raise typer.Exit(code=1)
+
+    under_list = list(under or [])
+    with _open_db(db_path) as database:
+        plan = build_organize_plan(database, dest, under=under_list)
+        to_move = plan.to_move
+        skipped = plan.skipped
+        move_bytes = sum(i.record.size for i in to_move)
+        exif_count = sum(1 for i in to_move if i.date_source == "exif")
+        mtime_count = sum(1 for i in to_move if i.date_source == "mtime")
+
+        mode = "APPLY" if apply else "DRY-RUN"
+        typer.echo(f"{mode} organize summary")
+        typer.echo(f"  Destination:     {plan.dest_root}")
+        typer.echo(f"  Layout:          YYYY/YYYY-MM")
+        if under_list:
+            typer.echo("  Under:")
+            for path in under_list:
+                typer.echo(f"    - {path.resolve()}")
+        typer.echo(f"  Files to move:   {len(to_move)}")
+        typer.echo(f"  Size to move:    {format_bytes(move_bytes)}")
+        typer.echo(f"  Date from EXIF:  {exif_count}")
+        typer.echo(f"  Date from mtime: {mtime_count}")
+        typer.echo(f"  Skipped:         {len(skipped)}")
+
+        source_paths = [item.source for item in to_move]
+        emptied: list[Path] = []
+        if not apply and to_move:
+            emptied = find_emptied_directories(
+                source_paths,
+                under=under_list or None,
+                ignore_files_still_present=True,
+            )
+            typer.echo(f"  Would empty dirs: {len(emptied)}")
+
+        if detailed:
+            if to_move:
+                typer.echo("")
+                typer.echo("Moves:")
+                for item in to_move:
+                    typer.echo(
+                        f"  {item.source} -> {item.dest} "
+                        f"({item.date_source} {item.taken_at.date()})"
+                    )
+            if skipped:
+                typer.echo("")
+                typer.echo("Skipped:")
+                for item in skipped:
+                    typer.echo(f"  {item.source} ({item.skip_reason})")
+            if not apply and emptied:
+                typer.echo("")
+                typer.echo("Would empty directories:")
+                for directory in emptied:
+                    typer.echo(f"  {directory}")
+
+        if not to_move:
+            typer.echo("\nNothing to organize.")
+            return
+
+        if apply:
+            moved, errors = apply_organize_plan(database, plan)
+            emptied_after = find_emptied_directories(
+                [src for src, _dst in moved],
+                under=under_list or None,
+                ignore_files_still_present=False,
+            )
+            log_path = log_file or (
+                Path.cwd() / "logs" / "photo-dedupe-organize.log"
+            )
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).isoformat()
+            lines = [f"# photo-dedupe organize log {stamp}", ""]
+            lines.extend(f"{src} -> {dst}" for src, dst in moved)
+            if emptied_after:
+                lines.append("")
+                lines.append("# emptied directories (not deleted)")
+                lines.extend(str(p) for p in emptied_after)
+            if errors:
+                lines.append("")
+                lines.append("# errors")
+                lines.extend(errors)
+            log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            typer.echo(f"\nMoved {len(moved)} file(s). Log: {log_path}")
+            typer.echo(f"Emptied directories: {len(emptied_after)} (not deleted)")
+            if emptied_after:
+                for directory in emptied_after:
+                    typer.echo(f"  {directory}")
+            if errors:
+                typer.echo(f"{len(errors)} error(s).", err=True)
+                raise typer.Exit(code=1)
+        else:
+            if emptied and not detailed:
+                typer.echo("")
+                typer.echo("Would empty directories:")
+                for directory in emptied:
+                    typer.echo(f"  {directory}")
+            typer.echo("\nDry-run only. Re-run with --apply to move files.")
+            if not detailed:
+                typer.echo("Use --detailed for a per-file preview.")
 
 
 @app.command(
