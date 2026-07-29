@@ -46,13 +46,17 @@ photo-dedupe clean
 # Dry-run with per-file keep/delete listing
 photo-dedupe clean --detailed
 
-# Only consider deletes under one or more directories
-photo-dedupe clean --root ~/Downloads --root ~/OneDrive/Camera\ Roll -d
+# Only delete duplicates under one or more directories
+photo-dedupe clean --delete-under ~/Downloads --delete-under ~/OneDrive/Camera\ Roll -d
 
 # Actually delete extras (keeps oldest mtime; shortest path on ties)
 photo-dedupe clean --apply
 # Same, limited to a folder
-photo-dedupe clean --root ~/Downloads --apply
+photo-dedupe clean --delete-under ~/Downloads --apply
+
+# Keeper policy: prefer library copies; only delete under Downloads
+photo-dedupe clean --prefer-root ~/Pictures --delete-under ~/Downloads -d
+photo-dedupe clean --keep newest --prefer-root ~/Pictures -d
 
 # Preview / remove stale index rows (files gone since last scan)
 photo-dedupe purge-missing

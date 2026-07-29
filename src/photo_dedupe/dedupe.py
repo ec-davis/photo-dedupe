@@ -5,8 +5,11 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Literal
 
 from photo_dedupe.db import Database, FileRecord
+
+KeepPolicy = Literal["oldest", "newest"]
 
 
 @dataclass(frozen=True)
@@ -18,15 +21,24 @@ class DuplicateGroup:
     delete_candidates: tuple[FileRecord, ...]
 
 
-def choose_keeper(files: list[FileRecord]) -> FileRecord:
-    """Keep oldest mtime; tie-break on shortest path, then path string."""
-    return min(files, key=lambda f: (f.mtime, len(f.path), f.path))
+@dataclass(frozen=True)
+class KeeperPolicy:
+    keep: KeepPolicy = "oldest"
+    prefer_roots: tuple[Path, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.keep not in ("oldest", "newest"):
+            raise ValueError(f"invalid keep policy: {self.keep}")
 
 
-def path_is_under_roots(path: str, roots: list[Path]) -> bool:
-    """True if path is inside (or equal to) one of the resolved roots."""
+def path_is_under_roots(path: str, roots: list[Path] | tuple[Path, ...]) -> bool:
+    """True if path is inside (or equal to) one of the resolved roots.
+
+    With an empty roots list, returns False (used for prefer-root ranking).
+    Callers that mean "no filter" should skip calling this.
+    """
     if not roots:
-        return True
+        return False
     try:
         target = Path(path).resolve()
     except OSError:
@@ -44,6 +56,32 @@ def path_is_under_roots(path: str, roots: list[Path]) -> bool:
         except ValueError:
             continue
     return False
+
+
+def choose_keeper(
+    files: list[FileRecord],
+    policy: KeeperPolicy | None = None,
+) -> FileRecord:
+    """Pick the file to keep from a duplicate set.
+
+    Priority:
+    1. Prefer paths under policy.prefer_roots (if any)
+    2. Oldest or newest mtime per policy.keep
+    3. Shortest path, then path string
+    """
+    policy = policy or KeeperPolicy()
+    prefer = policy.prefer_roots
+
+    def sort_key(record: FileRecord) -> tuple:
+        # Lower is better. Preferred roots rank first when configured.
+        if prefer:
+            preferred = 0 if path_is_under_roots(record.path, prefer) else 1
+        else:
+            preferred = 0
+        mtime_key = record.mtime if policy.keep == "oldest" else -record.mtime
+        return (preferred, mtime_key, len(record.path), record.path)
+
+    return min(files, key=sort_key)
 
 
 def filter_groups_by_roots(
@@ -71,7 +109,11 @@ def filter_groups_by_roots(
     return filtered
 
 
-def find_hash_duplicates(db: Database) -> list[DuplicateGroup]:
+def find_hash_duplicates(
+    db: Database,
+    policy: KeeperPolicy | None = None,
+) -> list[DuplicateGroup]:
+    policy = policy or KeeperPolicy()
     by_hash: dict[str, list[FileRecord]] = defaultdict(list)
     for record in db.present_files_with_hash():
         assert record.hash is not None
@@ -81,7 +123,7 @@ def find_hash_duplicates(db: Database) -> list[DuplicateGroup]:
     for digest, files in sorted(by_hash.items(), key=lambda item: item[0]):
         if len(files) < 2:
             continue
-        keeper = choose_keeper(files)
+        keeper = choose_keeper(files, policy)
         deletes = tuple(f for f in files if f.id != keeper.id)
         groups.append(
             DuplicateGroup(
@@ -95,8 +137,12 @@ def find_hash_duplicates(db: Database) -> list[DuplicateGroup]:
     return groups
 
 
-def find_name_size_mismatches(db: Database) -> list[DuplicateGroup]:
+def find_name_size_mismatches(
+    db: Database,
+    policy: KeeperPolicy | None = None,
+) -> list[DuplicateGroup]:
     """Same name + size but different hashes (suspicious naming collisions)."""
+    policy = policy or KeeperPolicy()
     by_key: dict[tuple[str, int], list[FileRecord]] = defaultdict(list)
     for record in db.present_files():
         by_key[(record.name.lower(), record.size)].append(record)
@@ -109,7 +155,7 @@ def find_name_size_mismatches(db: Database) -> list[DuplicateGroup]:
         # Only report when we have differing content hashes
         if len(hashes) < 2:
             continue
-        keeper = choose_keeper(files)
+        keeper = choose_keeper(files, policy)
         deletes = tuple(f for f in files if f.id != keeper.id)
         groups.append(
             DuplicateGroup(

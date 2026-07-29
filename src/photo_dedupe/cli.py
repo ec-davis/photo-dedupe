@@ -11,7 +11,11 @@ import typer
 
 from photo_dedupe import __version__
 from photo_dedupe.db import Database
-from photo_dedupe.dedupe import filter_groups_by_roots, find_hash_duplicates
+from photo_dedupe.dedupe import (
+    KeeperPolicy,
+    filter_groups_by_roots,
+    find_hash_duplicates,
+)
 from photo_dedupe.hashing import HASH_ALGO
 from photo_dedupe.report import export_reports, format_bytes
 from photo_dedupe.scanner import DEFAULT_EXTENSIONS, scan_roots
@@ -30,6 +34,19 @@ def _default_db_path() -> Path:
 
 def _open_db(db_path: Path) -> Database:
     return Database(db_path)
+
+
+def _keeper_policy(
+    keep: str,
+    prefer_root: list[Path] | None,
+) -> KeeperPolicy:
+    keep_norm = keep.lower().strip()
+    if keep_norm not in ("oldest", "newest"):
+        raise typer.BadParameter("keep must be 'oldest' or 'newest'")
+    return KeeperPolicy(
+        keep=keep_norm,  # type: ignore[arg-type]
+        prefer_roots=tuple(prefer_root or ()),
+    )
 
 
 @app.callback()
@@ -132,15 +149,26 @@ def duplicates(
         "--json",
         help="Emit JSON instead of a text summary",
     ),
+    keep: str = typer.Option(
+        "oldest",
+        "--keep",
+        help="Keeper policy: oldest or newest mtime",
+    ),
+    prefer_root: Optional[list[Path]] = typer.Option(
+        None,
+        "--prefer-root",
+        help="Prefer keeping files under this directory (repeatable)",
+    ),
 ) -> None:
     """Print exact duplicate groups from the index."""
+    policy = _keeper_policy(keep, prefer_root)
     db_path: Path = ctx.obj["db_path"]
     if not db_path.exists():
         typer.echo(f"Database not found: {db_path}", err=True)
         raise typer.Exit(code=1)
 
     with _open_db(db_path) as database:
-        groups = find_hash_duplicates(database)
+        groups = find_hash_duplicates(database, policy)
 
     if json_out:
         payload = [
@@ -181,11 +209,20 @@ def clean(
         "-d",
         help="Show per-file keep/delete preview (default dry-run is summary only)",
     ),
-    root: Optional[list[Path]] = typer.Option(
+    delete_under: Optional[list[Path]] = typer.Option(
         None,
-        "--root",
-        "-r",
+        "--delete-under",
         help="Only delete duplicates under this directory (repeatable)",
+    ),
+    keep: str = typer.Option(
+        "oldest",
+        "--keep",
+        help="Keeper policy: oldest or newest mtime",
+    ),
+    prefer_root: Optional[list[Path]] = typer.Option(
+        None,
+        "--prefer-root",
+        help="Prefer keeping files under this directory (repeatable)",
     ),
     log_file: Optional[Path] = typer.Option(
         None,
@@ -195,7 +232,8 @@ def clean(
 ) -> None:
     """Remove exact duplicate files using the keeper policy (dry-run by default)."""
     do_delete = apply
-    roots = list(root or [])
+    delete_roots = list(delete_under or [])
+    policy = _keeper_policy(keep, prefer_root)
 
     db_path: Path = ctx.obj["db_path"]
     if not db_path.exists():
@@ -206,18 +244,23 @@ def clean(
         stats = database.count_stats()
         present_count = stats["present"]
         size_before = stats["present_bytes"]
-        all_groups = find_hash_duplicates(database)
+        all_groups = find_hash_duplicates(database, policy)
 
-    groups = filter_groups_by_roots(all_groups, roots)
+    groups = filter_groups_by_roots(all_groups, delete_roots)
     candidates = [f for g in groups for f in g.delete_candidates]
     size_to_delete = sum(f.size for f in candidates)
     size_after = size_before - size_to_delete
 
     mode = "APPLY" if do_delete else "DRY-RUN"
     typer.echo(f"{mode} summary")
-    if roots:
-        typer.echo("  Limited to roots:")
-        for r in roots:
+    typer.echo(f"  Keep policy:            {policy.keep}")
+    if policy.prefer_roots:
+        typer.echo("  Prefer roots:")
+        for r in policy.prefer_roots:
+            typer.echo(f"    - {r.resolve()}")
+    if delete_roots:
+        typer.echo("  Delete under:")
+        for r in delete_roots:
             typer.echo(f"    - {r.resolve()}")
     typer.echo(f"  Total files found:      {present_count}")
     typer.echo(f"  Duplicate groups found: {len(all_groups)}")
@@ -228,8 +271,8 @@ def clean(
     typer.echo(f"  Total size (after):     {format_bytes(size_after)}")
 
     if not candidates:
-        if roots:
-            typer.echo("\nNo duplicate files to remove under the given root(s).")
+        if delete_roots:
+            typer.echo("\nNo duplicate files to remove under the given path(s).")
         else:
             typer.echo("\nNo duplicate files to remove.")
         return

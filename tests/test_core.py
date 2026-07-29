@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from photo_dedupe.db import Database, FileRecord
 from photo_dedupe.dedupe import (
+    KeeperPolicy,
     choose_keeper,
     filter_groups_by_roots,
     find_hash_duplicates,
@@ -47,7 +49,7 @@ def test_scan_finds_duplicates_and_reuses_hash(tmp_path: Path) -> None:
         assert second.stats.hashed == 0
 
 
-def test_choose_keeper_oldest_mtime(tmp_path: Path) -> None:
+def test_choose_keeper_oldest_and_newest(tmp_path: Path) -> None:
     older = FileRecord(
         id=1,
         source_id=1,
@@ -71,6 +73,42 @@ def test_choose_keeper_oldest_mtime(tmp_path: Path) -> None:
         status="present",
     )
     assert choose_keeper([newer, older]) == older
+    assert choose_keeper([newer, older], KeeperPolicy(keep="newest")) == newer
+
+
+def test_choose_keeper_prefer_root(tmp_path: Path) -> None:
+    library = tmp_path / "library"
+    downloads = tmp_path / "downloads"
+    library.mkdir()
+    downloads.mkdir()
+    (library / "shot.png").write_bytes(b"x")
+    (downloads / "shot.png").write_bytes(b"x")
+
+    lib_file = FileRecord(
+        id=1,
+        source_id=1,
+        path=str((library / "shot.png").resolve()),
+        name="shot.png",
+        size=10,
+        mtime=200.0,
+        hash="abc",
+        hashed_at=None,
+        status="present",
+    )
+    dl_file = FileRecord(
+        id=2,
+        source_id=1,
+        path=str((downloads / "shot.png").resolve()),
+        name="shot.png",
+        size=10,
+        mtime=100.0,
+        hash="abc",
+        hashed_at=None,
+        status="present",
+    )
+
+    policy = KeeperPolicy(keep="oldest", prefer_roots=(library,))
+    assert choose_keeper([dl_file, lib_file], policy) == lib_file
 
 
 def test_filter_groups_by_roots(tmp_path: Path) -> None:
@@ -78,11 +116,8 @@ def test_filter_groups_by_roots(tmp_path: Path) -> None:
     junk_dir = tmp_path / "downloads"
     write_png(keep_dir / "original.png", (255, 0, 0))
     write_png(junk_dir / "copy.png", (255, 0, 0))
-    # Make original older so it remains the keeper
     original = keep_dir / "original.png"
     copy = junk_dir / "copy.png"
-    import os
-
     os.utime(original, (1000, 1000))
     os.utime(copy, (2000, 2000))
 
