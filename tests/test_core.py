@@ -20,6 +20,11 @@ from photo_dedupe.organize import (
     find_emptied_directories,
     remove_empty_directories,
 )
+from photo_dedupe.plan import (
+    filter_plan_by_keeper_under,
+    load_clean_plan,
+    write_clean_plan,
+)
 from photo_dedupe.report import build_report_payload, export_reports
 from photo_dedupe.scanner import scan_roots
 
@@ -118,6 +123,41 @@ def test_choose_keeper_prefer_root(tmp_path: Path) -> None:
 
     policy = KeeperPolicy(keep="oldest", prefer_roots=(library,))
     assert choose_keeper([dl_file, lib_file], policy) == lib_file
+
+
+def test_choose_keeper_avoid_root(tmp_path: Path) -> None:
+    album = tmp_path / "various unidentified"
+    phone = tmp_path / "phone unsorted"
+    album.mkdir()
+    phone.mkdir()
+    (album / "shot.png").write_bytes(b"x")
+    (phone / "shot.png").write_bytes(b"x")
+
+    album_file = FileRecord(
+        id=1,
+        source_id=1,
+        path=str((album / "shot.png").resolve()),
+        name="shot.png",
+        size=10,
+        mtime=200.0,  # newer
+        hash="abc",
+        hashed_at=None,
+        status="present",
+    )
+    phone_file = FileRecord(
+        id=2,
+        source_id=1,
+        path=str((phone / "shot.png").resolve()),
+        name="shot.png",
+        size=10,
+        mtime=100.0,  # older — would win without avoid
+        hash="abc",
+        hashed_at=None,
+        status="present",
+    )
+
+    policy = KeeperPolicy(keep="oldest", avoid_roots=(phone,))
+    assert choose_keeper([phone_file, album_file], policy) == album_file
 
 
 def test_filter_groups_by_roots(tmp_path: Path) -> None:
@@ -304,3 +344,35 @@ def test_remove_empty_directories(tmp_path: Path) -> None:
     assert nested.resolve() in {p.resolve() for p in removed}
     assert not nested.exists()
     assert protect.exists()
+
+
+def test_load_and_filter_clean_plan(tmp_path: Path) -> None:
+    from photo_dedupe.plan import PlanEntry
+
+    tequila = tmp_path / "Tequila Hike"
+    phone = tmp_path / "phone unsorted"
+    other = tmp_path / "other album"
+    tequila.mkdir()
+    phone.mkdir()
+    other.mkdir()
+    plan_path = tmp_path / "plan.json"
+    write_clean_plan(
+        plan_path,
+        [
+            PlanEntry(
+                keeper=str((tequila / "a.jpg").resolve()),
+                delete_candidates=(str((phone / "a.jpg").resolve()),),
+                hash="aaa",
+            ),
+            PlanEntry(
+                keeper=str((other / "b.jpg").resolve()),
+                delete_candidates=(str((phone / "b.jpg").resolve()),),
+                hash="bbb",
+            ),
+        ],
+    )
+    entries = load_clean_plan(plan_path)
+    assert len(entries) == 2
+    filtered = filter_plan_by_keeper_under(entries, [tequila])
+    assert len(filtered) == 1
+    assert "Tequila Hike" in filtered[0].keeper

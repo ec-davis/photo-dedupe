@@ -64,6 +64,7 @@ def build_report_payload(
         "hash_algorithm": HASH_ALGO,
         "keep_policy": policy.keep,
         "prefer_roots": [str(p.resolve()) for p in policy.prefer_roots],
+        "avoid_roots": [str(p.resolve()) for p in policy.avoid_roots],
         "under": under_resolved,
         "stats": stats,
         "duplicate_groups": len(hash_groups),
@@ -123,6 +124,11 @@ def write_markdown_report(
         lines.append(
             "Prefer roots: "
             + ", ".join(f"`{p}`" for p in payload["prefer_roots"])
+        )
+    if payload["avoid_roots"]:
+        lines.append(
+            "Avoid roots: "
+            + ", ".join(f"`{p}`" for p in payload["avoid_roots"])
         )
     if payload["under"]:
         lines.append(

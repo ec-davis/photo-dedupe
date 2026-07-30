@@ -27,6 +27,7 @@ class DuplicateGroup:
 class KeeperPolicy:
     keep: KeepPolicy = "oldest"
     prefer_roots: tuple[Path, ...] = ()
+    avoid_roots: tuple[Path, ...] = ()
 
     def __post_init__(self) -> None:
         if self.keep not in ("oldest", "newest"):
@@ -47,7 +48,7 @@ def sort_duplicate_groups(
 def path_is_under_roots(path: str, roots: list[Path] | tuple[Path, ...]) -> bool:
     """True if path is inside (or equal to) one of the resolved roots.
 
-    With an empty roots list, returns False (used for prefer-root ranking).
+    With an empty roots list, returns False (used for prefer/avoid ranking).
     Callers that mean "no filter" should skip calling this.
     """
     if not roots:
@@ -79,20 +80,25 @@ def choose_keeper(
 
     Priority:
     1. Prefer paths under policy.prefer_roots (if any)
-    2. Oldest or newest mtime per policy.keep
-    3. Shortest path, then path string
+    2. Avoid paths under policy.avoid_roots when another copy exists elsewhere
+    3. Oldest or newest mtime per policy.keep
+    4. Shortest path, then path string
     """
     policy = policy or KeeperPolicy()
     prefer = policy.prefer_roots
+    avoid = policy.avoid_roots
+
+    def tier(record: FileRecord) -> int:
+        # Lower is better.
+        if prefer and path_is_under_roots(record.path, prefer):
+            return 0
+        if avoid and path_is_under_roots(record.path, avoid):
+            return 2
+        return 1
 
     def sort_key(record: FileRecord) -> tuple:
-        # Lower is better. Preferred roots rank first when configured.
-        if prefer:
-            preferred = 0 if path_is_under_roots(record.path, prefer) else 1
-        else:
-            preferred = 0
         mtime_key = record.mtime if policy.keep == "oldest" else -record.mtime
-        return (preferred, mtime_key, len(record.path), record.path)
+        return (tier(record), mtime_key, len(record.path), record.path)
 
     return min(files, key=sort_key)
 
