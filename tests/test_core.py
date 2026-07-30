@@ -7,6 +7,7 @@ from photo_dedupe.db import Database, FileRecord
 from photo_dedupe.dedupe import (
     KeeperPolicy,
     choose_keeper,
+    filter_groups_by_names,
     filter_groups_by_roots,
     filter_groups_involving_roots,
     find_hash_duplicates,
@@ -21,6 +22,8 @@ from photo_dedupe.organize import (
     remove_empty_directories,
 )
 from photo_dedupe.plan import (
+    PlanEntry,
+    filter_plan_by_delete_names,
     filter_plan_by_keeper_under,
     load_clean_plan,
     write_clean_plan,
@@ -158,6 +161,111 @@ def test_choose_keeper_avoid_root(tmp_path: Path) -> None:
 
     policy = KeeperPolicy(keep="oldest", avoid_roots=(phone,))
     assert choose_keeper([phone_file, album_file], policy) == album_file
+
+
+def test_choose_keeper_avoid_name(tmp_path: Path) -> None:
+    folder = tmp_path / "pics"
+    folder.mkdir()
+    original = FileRecord(
+        id=1,
+        source_id=1,
+        path=str((folder / "vacation.jpg").resolve()),
+        name="vacation.jpg",
+        size=10,
+        mtime=200.0,  # newer
+        hash="abc",
+        hashed_at=None,
+        status="present",
+    )
+    copy_of = FileRecord(
+        id=2,
+        source_id=1,
+        path=str((folder / "Copy of vacation.jpg").resolve()),
+        name="Copy of vacation.jpg",
+        size=10,
+        mtime=100.0,  # older — would win without avoid-name
+        hash="abc",
+        hashed_at=None,
+        status="present",
+    )
+
+    policy = KeeperPolicy(keep="oldest", avoid_names=("copy of",))
+    assert choose_keeper([copy_of, original], policy) == original
+
+
+def test_choose_keeper_avoid_name_matches_folder(tmp_path: Path) -> None:
+    album = tmp_path / "album"
+    copy_dir = tmp_path / "birth - Copy"
+    album.mkdir()
+    copy_dir.mkdir()
+    good = FileRecord(
+        id=1,
+        source_id=1,
+        path=str((album / "shot.jpg").resolve()),
+        name="shot.jpg",
+        size=10,
+        mtime=200.0,
+        hash="abc",
+        hashed_at=None,
+        status="present",
+    )
+    bad = FileRecord(
+        id=2,
+        source_id=1,
+        path=str((copy_dir / "shot.jpg").resolve()),
+        name="shot.jpg",
+        size=10,
+        mtime=100.0,
+        hash="abc",
+        hashed_at=None,
+        status="present",
+    )
+    policy = KeeperPolicy(keep="oldest", avoid_names=("copy",))
+    assert choose_keeper([bad, good], policy) == good
+
+
+def test_filter_groups_by_names(tmp_path: Path) -> None:
+    pics = tmp_path / "pics"
+    write_png(pics / "vacation.png", (255, 0, 0))
+    write_png(pics / "Copy of vacation.png", (255, 0, 0))
+    write_png(pics / "vacation_backup.png", (255, 0, 0))
+    os.utime(pics / "vacation.png", (2000, 2000))
+    os.utime(pics / "Copy of vacation.png", (1000, 1000))
+    os.utime(pics / "vacation_backup.png", (1500, 1500))
+
+    db_path = tmp_path / "index.sqlite"
+    with Database(db_path) as db:
+        scan_roots(db, [tmp_path])
+        groups = find_hash_duplicates(
+            db, KeeperPolicy(keep="oldest", avoid_names=("copy of",))
+        )
+
+    assert len(groups) == 1
+    limited = filter_groups_by_names(groups, ["copy of"])
+    assert len(limited) == 1
+    assert len(limited[0].delete_candidates) == 1
+    assert "copy of" in limited[0].delete_candidates[0].path.casefold()
+
+
+def test_filter_plan_by_delete_names() -> None:
+    entries = [
+        PlanEntry(
+            keeper=r"C:\pics\vacation.jpg",
+            delete_candidates=(
+                r"C:\pics\Copy of vacation.jpg",
+                r"C:\pics\vacation_backup.jpg",
+            ),
+            hash="abc",
+        ),
+        PlanEntry(
+            keeper=r"C:\pics\other.jpg",
+            delete_candidates=(r"C:\pics\other_backup.jpg",),
+            hash="def",
+        ),
+    ]
+    filtered = filter_plan_by_delete_names(entries, ["copy of"])
+    assert len(filtered) == 1
+    assert filtered[0].delete_candidates == (r"C:\pics\Copy of vacation.jpg",)
 
 
 def test_filter_groups_by_roots(tmp_path: Path) -> None:

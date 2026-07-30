@@ -11,6 +11,7 @@ from photo_dedupe.dedupe import (
     DuplicateGroup,
     KeeperPolicy,
     SortBy,
+    filter_groups_involving_names,
     filter_groups_involving_roots,
     find_hash_duplicates,
     find_name_size_mismatches,
@@ -45,27 +46,37 @@ def build_report_payload(
     *,
     policy: KeeperPolicy | None = None,
     under: list[Path] | None = None,
+    name: list[str] | None = None,
     sort_by: SortBy = "path",
 ) -> dict:
     policy = policy or KeeperPolicy()
-    hash_groups = filter_groups_involving_roots(
-        find_hash_duplicates(db, policy, sort_by=sort_by), under
+    hash_groups = filter_groups_involving_names(
+        filter_groups_involving_roots(
+            find_hash_duplicates(db, policy, sort_by=sort_by), under
+        ),
+        name,
     )
-    name_groups = filter_groups_involving_roots(
-        find_name_size_mismatches(db, policy), under
+    name_groups = filter_groups_involving_names(
+        filter_groups_involving_roots(
+            find_name_size_mismatches(db, policy), under
+        ),
+        name,
     )
     stats = db.count_stats()
     reclaimable = sum(
         sum(f.size for f in g.delete_candidates) for g in hash_groups
     )
     under_resolved = [str(Path(p).resolve()) for p in (under or [])]
+    name_needles = [n for n in (name or []) if n and str(n).strip()]
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "hash_algorithm": HASH_ALGO,
         "keep_policy": policy.keep,
         "prefer_roots": [str(p.resolve()) for p in policy.prefer_roots],
         "avoid_roots": [str(p.resolve()) for p in policy.avoid_roots],
+        "avoid_names": list(policy.avoid_names),
         "under": under_resolved,
+        "name": name_needles,
         "stats": stats,
         "duplicate_groups": len(hash_groups),
         "duplicate_files_extra": sum(len(g.delete_candidates) for g in hash_groups),
@@ -81,11 +92,12 @@ def write_json_report(
     *,
     policy: KeeperPolicy | None = None,
     under: list[Path] | None = None,
+    name: list[str] | None = None,
     sort_by: SortBy = "path",
 ) -> Path:
     path = Path(path)
     payload = build_report_payload(
-        db, policy=policy, under=under, sort_by=sort_by
+        db, policy=policy, under=under, name=name, sort_by=sort_by
     )
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
@@ -107,11 +119,12 @@ def write_markdown_report(
     *,
     policy: KeeperPolicy | None = None,
     under: list[Path] | None = None,
+    name: list[str] | None = None,
     sort_by: SortBy = "path",
 ) -> Path:
     path = Path(path)
     payload = build_report_payload(
-        db, policy=policy, under=under, sort_by=sort_by
+        db, policy=policy, under=under, name=name, sort_by=sort_by
     )
     lines: list[str] = [
         "# Photo Deduper Report",
@@ -130,10 +143,20 @@ def write_markdown_report(
             "Avoid roots: "
             + ", ".join(f"`{p}`" for p in payload["avoid_roots"])
         )
+    if payload["avoid_names"]:
+        lines.append(
+            "Avoid names: "
+            + ", ".join(f"`{n}`" for n in payload["avoid_names"])
+        )
     if payload["under"]:
         lines.append(
             "Limited to groups involving: "
             + ", ".join(f"`{p}`" for p in payload["under"])
+        )
+    if payload["name"]:
+        lines.append(
+            "Limited to paths containing: "
+            + ", ".join(f"`{n}`" for n in payload["name"])
         )
     lines.extend(
         [
@@ -201,6 +224,7 @@ def export_reports(
     fmt: str = "both",
     policy: KeeperPolicy | None = None,
     under: list[Path] | None = None,
+    name: list[str] | None = None,
     sort_by: SortBy = "path",
 ) -> list[Path]:
     output_dir = Path(output_dir)
@@ -213,6 +237,7 @@ def export_reports(
                 output_dir / "report.md",
                 policy=policy,
                 under=under,
+                name=name,
                 sort_by=sort_by,
             )
         )
@@ -223,6 +248,7 @@ def export_reports(
                 output_dir / "duplicates.json",
                 policy=policy,
                 under=under,
+                name=name,
                 sort_by=sort_by,
             )
         )

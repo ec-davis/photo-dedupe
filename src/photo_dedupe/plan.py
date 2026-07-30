@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from photo_dedupe.dedupe import path_is_under_roots
+from photo_dedupe.dedupe import filename_contains_any, path_is_under_roots
 
 
 @dataclass(frozen=True)
@@ -80,6 +80,27 @@ def filter_plan_by_keeper_under(
     return [
         e for e in entries if path_is_under_roots(e.keeper, roots)
     ]
+
+
+def filter_plan_by_delete_names(
+    entries: list[PlanEntry],
+    needles: list[str] | tuple[str, ...] | None,
+) -> list[PlanEntry]:
+    """Keep only delete candidates whose filenames match needles; drop empties."""
+    names = tuple(n for n in (needles or ()) if n and str(n).strip())
+    if not names:
+        return entries
+    filtered: list[PlanEntry] = []
+    for entry in entries:
+        deletes = tuple(
+            p for p in entry.delete_candidates if filename_contains_any(p, names)
+        )
+        if not deletes:
+            continue
+        filtered.append(
+            PlanEntry(keeper=entry.keeper, delete_candidates=deletes, hash=entry.hash)
+        )
+    return filtered
 
 
 def write_clean_plan(path: Path, entries: list[PlanEntry]) -> Path:

@@ -13,7 +13,9 @@ from photo_dedupe import __version__
 from photo_dedupe.db import Database
 from photo_dedupe.dedupe import (
     KeeperPolicy,
+    filter_groups_by_names,
     filter_groups_by_roots,
+    filter_groups_involving_names,
     filter_groups_involving_roots,
     find_hash_duplicates,
     path_is_under_roots,
@@ -26,6 +28,7 @@ from photo_dedupe.organize import (
     remove_empty_directories,
 )
 from photo_dedupe.plan import (
+    filter_plan_by_delete_names,
     filter_plan_by_keeper_under,
     load_clean_plan,
 )
@@ -59,14 +62,17 @@ def _keeper_policy(
     keep: str,
     prefer_root: list[Path] | None,
     avoid_root: list[Path] | None = None,
+    avoid_name: list[str] | None = None,
 ) -> KeeperPolicy:
     keep_norm = keep.lower().strip()
     if keep_norm not in ("oldest", "newest"):
         raise typer.BadParameter("keep must be 'oldest' or 'newest'")
+    names = tuple(n for n in (avoid_name or []) if n and n.strip())
     return KeeperPolicy(
         keep=keep_norm,  # type: ignore[arg-type]
         prefer_roots=tuple(prefer_root or ()),
         avoid_roots=tuple(avoid_root or ()),
+        avoid_names=names,
     )
 
 
@@ -231,6 +237,11 @@ def report(
         "--under",
         help="Only report groups that involve this path; delete candidates listed are limited to it (repeatable)",
     ),
+    name: Optional[list[str]] = typer.Option(
+        None,
+        "--name",
+        help='Only report groups involving a path containing this substring; delete candidates listed are limited to matches (repeatable)',
+    ),
     keep: str = typer.Option(
         "oldest",
         "--keep",
@@ -246,6 +257,11 @@ def report(
         "--avoid-root",
         help="Prefer any copy outside this path when another exists (repeatable); e.g. phone unsorted",
     ),
+    avoid_name: Optional[list[str]] = typer.Option(
+        None,
+        "--avoid-name",
+        help='Prefer paths that do not contain this substring (case-insensitive, folders or filenames; repeatable); e.g. "copy"',
+    ),
     sort: str = typer.Option(
         "path",
         "--sort",
@@ -258,7 +274,7 @@ def report(
         raise typer.BadParameter("format must be md, json, or both")
     sort_by = _sort_by(sort)
 
-    policy = _keeper_policy(keep, prefer_root, avoid_root)
+    policy = _keeper_policy(keep, prefer_root, avoid_root, avoid_name)
     db_path: Path = ctx.obj["db_path"]
     if not db_path.exists():
         typer.echo(f"Database not found: {db_path}", err=True)
@@ -271,6 +287,7 @@ def report(
             fmt=fmt,
             policy=policy,
             under=list(under or []),
+            name=list(name or []),
             sort_by=sort_by,  # type: ignore[arg-type]
         )
 
@@ -291,6 +308,11 @@ def duplicates(
         "--under",
         help="Only list groups that involve this path; delete candidates shown are limited to it (repeatable)",
     ),
+    name: Optional[list[str]] = typer.Option(
+        None,
+        "--name",
+        help='Only list groups involving a path containing this substring; delete candidates shown are limited to matches (repeatable)',
+    ),
     keep: str = typer.Option(
         "oldest",
         "--keep",
@@ -306,6 +328,11 @@ def duplicates(
         "--avoid-root",
         help="Prefer any copy outside this path when another exists (repeatable); e.g. phone unsorted",
     ),
+    avoid_name: Optional[list[str]] = typer.Option(
+        None,
+        "--avoid-name",
+        help='Prefer paths that do not contain this substring (case-insensitive, folders or filenames; repeatable); e.g. "copy"',
+    ),
     sort: str = typer.Option(
         "path",
         "--sort",
@@ -318,7 +345,7 @@ def duplicates(
     ),
 ) -> None:
     """List exact duplicate groups and the chosen keeper for each."""
-    policy = _keeper_policy(keep, prefer_root, avoid_root)
+    policy = _keeper_policy(keep, prefer_root, avoid_root, avoid_name)
     sort_by = _sort_by(sort)
     db_path: Path = ctx.obj["db_path"]
     if not db_path.exists():
@@ -326,9 +353,12 @@ def duplicates(
         raise typer.Exit(code=1)
 
     with _open_db(db_path) as database:
-        groups = filter_groups_involving_roots(
-            find_hash_duplicates(database, policy, sort_by=sort_by),  # type: ignore[arg-type]
-            list(under or []),
+        groups = filter_groups_involving_names(
+            filter_groups_involving_roots(
+                find_hash_duplicates(database, policy, sort_by=sort_by),  # type: ignore[arg-type]
+                list(under or []),
+            ),
+            list(name or []),
         )
 
     if json_out:
@@ -393,6 +423,11 @@ def clean(
         "--delete-under",
         help="Only allow deletes under this directory; other paths are left alone (repeatable)",
     ),
+    delete_name: Optional[list[str]] = typer.Option(
+        None,
+        "--delete-name",
+        help='Only allow deletes whose path contains this substring (case-insensitive, folders or filenames; repeatable); e.g. "copy"',
+    ),
     keeper_under: Optional[list[Path]] = typer.Option(
         None,
         "--keeper-under",
@@ -413,6 +448,11 @@ def clean(
         "--avoid-root",
         help="Prefer any copy outside this path when another exists (repeatable); ignored with --plan",
     ),
+    avoid_name: Optional[list[str]] = typer.Option(
+        None,
+        "--avoid-name",
+        help='Prefer paths that do not contain this substring (case-insensitive, folders or filenames; repeatable); ignored with --plan',
+    ),
     log_file: Optional[Path] = typer.Option(
         None,
         "--log-file",
@@ -427,8 +467,9 @@ def clean(
     """
     do_delete = apply
     delete_roots = list(delete_under or [])
+    delete_names = [n for n in (delete_name or []) if n and str(n).strip()]
     keeper_roots = list(keeper_under or [])
-    policy = _keeper_policy(keep, prefer_root, avoid_root)
+    policy = _keeper_policy(keep, prefer_root, avoid_root, avoid_name)
 
     db_path: Path = ctx.obj["db_path"]
     if not db_path.exists():
@@ -453,6 +494,8 @@ def clean(
             raise typer.Exit(code=1) from exc
         if keeper_roots:
             entries = filter_plan_by_keeper_under(entries, keeper_roots)
+        if delete_names:
+            entries = filter_plan_by_delete_names(entries, delete_names)
         group_count = len(entries)
         all_groups_count = group_count
         for entry in entries:
@@ -486,7 +529,10 @@ def clean(
                     for g in all_groups
                     if path_is_under_roots(g.keeper.path, keeper_roots)
                 ]
-            groups = filter_groups_by_roots(all_groups, delete_roots)
+            groups = filter_groups_by_names(
+                filter_groups_by_roots(all_groups, delete_roots),
+                delete_names,
+            )
             group_count = len(groups)
             for g in groups:
                 for f in g.delete_candidates:
@@ -510,6 +556,10 @@ def clean(
             typer.echo("  Avoid roots:")
             for r in policy.avoid_roots:
                 typer.echo(f"    - {r.resolve()}")
+        if policy.avoid_names:
+            typer.echo("  Avoid names:")
+            for n in policy.avoid_names:
+                typer.echo(f"    - {n}")
     if keeper_roots:
         typer.echo("  Keeper under:")
         for r in keeper_roots:
@@ -518,7 +568,11 @@ def clean(
         typer.echo("  Delete under:")
         for r in delete_roots:
             typer.echo(f"    - {r.resolve()}")
-    if delete_roots or keeper_roots or plan is not None:
+    if delete_names:
+        typer.echo("  Delete names:")
+        for n in delete_names:
+            typer.echo(f"    - {n}")
+    if delete_roots or keeper_roots or delete_names or plan is not None:
         typer.echo(f"  Index files:            {present_count}")
         if plan is None:
             typer.echo(f"  Index duplicate groups: {all_groups_count}")

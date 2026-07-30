@@ -28,10 +28,28 @@ class KeeperPolicy:
     keep: KeepPolicy = "oldest"
     prefer_roots: tuple[Path, ...] = ()
     avoid_roots: tuple[Path, ...] = ()
+    avoid_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.keep not in ("oldest", "newest"):
             raise ValueError(f"invalid keep policy: {self.keep}")
+
+
+def path_contains_any(path: str, needles: list[str] | tuple[str, ...]) -> bool:
+    """True if the full path contains any needle (case-insensitive).
+
+    Matches folder names as well as filenames (e.g. ``birth - Copy\\a.jpg``
+    or ``Copy of vacation.jpg``).
+    """
+    if not needles:
+        return False
+    haystack = path.casefold()
+    return any(n.casefold() in haystack for n in needles if n)
+
+
+# Back-compat alias used by older call sites / tests.
+def filename_contains_any(path: str, needles: list[str] | tuple[str, ...]) -> bool:
+    return path_contains_any(path, needles)
 
 
 def sort_duplicate_groups(
@@ -81,12 +99,14 @@ def choose_keeper(
     Priority:
     1. Prefer paths under policy.prefer_roots (if any)
     2. Avoid paths under policy.avoid_roots when another copy exists elsewhere
-    3. Oldest or newest mtime per policy.keep
-    4. Shortest path, then path string
+    3. Avoid paths containing policy.avoid_names substrings (if any)
+    4. Oldest or newest mtime per policy.keep
+    5. Shortest path, then path string
     """
     policy = policy or KeeperPolicy()
     prefer = policy.prefer_roots
     avoid = policy.avoid_roots
+    avoid_names = policy.avoid_names
 
     def tier(record: FileRecord) -> int:
         # Lower is better.
@@ -96,9 +116,18 @@ def choose_keeper(
             return 2
         return 1
 
+    def name_penalty(record: FileRecord) -> int:
+        return 1 if filename_contains_any(record.path, avoid_names) else 0
+
     def sort_key(record: FileRecord) -> tuple:
         mtime_key = record.mtime if policy.keep == "oldest" else -record.mtime
-        return (tier(record), mtime_key, len(record.path), record.path)
+        return (
+            tier(record),
+            name_penalty(record),
+            mtime_key,
+            len(record.path),
+            record.path,
+        )
 
     return min(files, key=sort_key)
 
@@ -152,6 +181,57 @@ def filter_groups_involving_roots(
             if path_is_under_roots(f.path, roots)
         )
         # Group still involves the roots (e.g. only the keeper is under them).
+        filtered.append(replace(group, delete_candidates=candidates))
+    return filtered
+
+
+def filter_groups_by_names(
+    groups: list[DuplicateGroup],
+    needles: list[str] | tuple[str, ...] | None,
+) -> list[DuplicateGroup]:
+    """Keep global keepers; only delete candidates whose names match needles.
+
+    When needles is empty/None, groups are unchanged. Groups with no remaining
+    delete candidates are dropped.
+    """
+    names = tuple(n for n in (needles or ()) if n and str(n).strip())
+    if not names:
+        return groups
+
+    filtered: list[DuplicateGroup] = []
+    for group in groups:
+        candidates = tuple(
+            f
+            for f in group.delete_candidates
+            if filename_contains_any(f.path, names)
+        )
+        if not candidates:
+            continue
+        filtered.append(replace(group, delete_candidates=candidates))
+    return filtered
+
+
+def filter_groups_involving_names(
+    groups: list[DuplicateGroup],
+    needles: list[str] | tuple[str, ...] | None,
+) -> list[DuplicateGroup]:
+    """Keep groups that include at least one file whose name matches needles.
+
+    Delete candidates are limited to matching names. The keeper is unchanged.
+    """
+    names = tuple(n for n in (needles or ()) if n and str(n).strip())
+    if not names:
+        return groups
+
+    filtered: list[DuplicateGroup] = []
+    for group in groups:
+        if not any(filename_contains_any(f.path, names) for f in group.files):
+            continue
+        candidates = tuple(
+            f
+            for f in group.delete_candidates
+            if filename_contains_any(f.path, names)
+        )
         filtered.append(replace(group, delete_candidates=candidates))
     return filtered
 
